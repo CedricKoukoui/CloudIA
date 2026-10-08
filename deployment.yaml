@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telecom-ia-deployment
+  labels:
+    app: telecom-ia
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: telecom-ia
+  template:
+    metadata:
+      labels:
+        app: telecom-ia
+    spec:
+      containers:
+      - name: ia-analyzer
+        image: telecom-ia:v1
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8000
+          name: metrics
+        env:
+        - name: RABBITMQ_URL
+          value: "amqp://user:password@telecom-broker-rabbitmq:5672/%2F"
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "250m"
+            memory: "256Mi"

@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: telecom-ia-service
+  labels:
+    app: telecom-ia # Doit correspondre au label de votre déploiement
+spec:
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: metrics
+  selector:
+    app: telecom-ia
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: telecom-ia-podmonitor
+  labels:
+    release: telecom-monitor # Crucial : lie ce moniteur à votre installation Helm Prometheus
+spec:
+  selector:
+    matchLabels:
+      app: telecom-ia
+  podMetricsEndpoints:
+  - port: metrics
+    interval: 5s # Fréquence de collecte très rapide pour le test (5 secondes)
+
