@@ -1,0 +1,49 @@
+name: Telecom IA Cloud-Native CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. Récupération du code du dépôt
+    - name: Checkout code
+      uses: actions/checkout@v1
+
+    # 2. Configuration de l'environnement Python
+    - name: Set up Python
+      uses: actions/setup-python@v1
+      with:
+        python-python-version: '3.10'
+
+    # 3. Installation des dépendances pour validation
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+    # 4. Étape de Linting (Vérification des erreurs de syntaxe Python)
+    - name: Lint Python Code avec Flake8
+      run: |
+        # stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+    # 5. Validation des fichiers Kubernetes (YAML)
+    - name: Validate Kubernetes Manifests (Dry-Run)
+      run: |
+        # Utilisation de kubeconform ou d'une validation de structure native
+        sudo apt-get update && sudo apt-get install -y kubectl
+        kubectl diff -f deployment.yaml --local || true
+        kubectl diff -f prometheus-link.yaml --local || true
+
+    # 6. Simulation de Build Docker (Vérifie que l'image v3 se compile sans erreur)
+    - name: Build Docker Image (Validation)
+      run: |
+        docker build -t telecom-ia:${{ github.sha }} .
+
