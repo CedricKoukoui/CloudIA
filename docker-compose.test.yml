@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  # 1. Le Broker Réseau
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      - RABBITMQ_DEFAULT_USER=user
+      - RABBITMQ_DEFAULT_PASS=password
+
+  # 2. Votre brique IA (compilée automatiquement à partir de votre Dockerfile)
+  ia-analyzer:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - RABBITMQ_URL=amqp://user:password@rabbitmq:5672/%2F
+    depends_on:
+      - rabbitmq
+
+  # 3. Le générateur d'antenne télécom
+  generator:
+    build: .
+    command: python generator.py
+    environment:
+      - RABBITMQ_URL=amqp://user:password@rabbitmq:5672/%2F
+    depends_on:
+      - rabbitmq
+
+  # 4. Le conteneur éphémère qui exécute notre script de test
+  tester:
+    build: .
+    command: python test_observability.py
+    network_mode: "host" # Permet de scanner le port 8000 de l'IA facilement
+    depends_on:
+      - ia-analyzer
+      - generator
+
