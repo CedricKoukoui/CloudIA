@@ -2,23 +2,34 @@ import time
 import json
 import random
 import pika
+import os
+import sys
 
-# Connexion locale à RabbitMQ (pour le test direct depuis votre Mac)
+AMQP_URL = os.environ.get('RABBITMQ_URL', 'amqp://user:password@localhost:5672/%2F')
+params = pika.URLParameters(AMQP_URL)
 
-# il envoie les paquets sur le port 5672
-params = pika.URLParameters('amqp://user:password@localhost:5672/%2F')
-connection = pika.BlockingConnection(params)
+print("🚀 Initialisation du simulateur d'équipement réseau (Version v2 - Messages Persistants)...")
 
-# Même liaison 'telecom_traffic' que celle declarée au niveau du récepteur (app.py) 
+connection = None
+for i in range(15):
+    try:
+        connection = pika.BlockingConnection(params)
+        break
+    except pika.exceptions.AMQPConnectionError:
+        print(f"⏳ RabbitMQ n'est pas encore prêt (Tentative {i+1}/15)... Attente de 2s")
+        time.sleep(2)
+
+if not connection:
+    print("❌ Impossible de se connecter à RabbitMQ après plusieurs tentatives.")
+    sys.exit(1)
+
 channel = connection.channel()
-channel.queue_declare(queue='telecom_traffic')
 
-print("🚀 Lancement du simulateur d'équipement réseau...")
+# SOLUTION v2 : On déclare la file d'attente comme DURABLE (surit à l'arrêt du broker)
+channel.queue_declare(queue='telecom_traffic', durable=True)
+print("🟢 Connecté avec succès à RabbitMQ. Début de l'envoi du flux persistant...")
 
 while True:
-    # Simulation de données
-
-    # traffic normmal
     if random.random() > 0.15:
         data = {
             "source": "Antenne_Elancourt_01",
@@ -27,8 +38,6 @@ while True:
             "latency": int(random.normalvariate(10, 2))
         }
     else:
-    # traffic anormal
-        # Génération d'une anomalie
         data = {
             "source": "Antenne_Elancourt_01",
             "packets": random.randint(500, 800),
@@ -36,8 +45,16 @@ while True:
             "latency": random.randint(90, 150)
         }
     
-    # Envoi au broker ".basic_publish"
-    channel.basic_publish(exchange='', routing_key='telecom_traffic', body=json.dumps(data))
-    print(f"📡 Métriques envoyées : {data}")
+    try:
+        # SOLUTION v2 : Ajout de delivery_mode=2 pour forcer l'écriture immédiate sur le disque
+        channel.basic_publish(
+            exchange='', 
+            routing_key='telecom_traffic', 
+            body=json.dumps(data),
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
+        print(f"📡 Métrique persistante envoyée : {data}")
+    except Exception as e:
+        print(f"⚠️ Erreur lors de l'envoi : {e}")
     time.sleep(1)
 

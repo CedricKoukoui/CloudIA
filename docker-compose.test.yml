@@ -1,12 +1,13 @@
-version: '3.8'
-
 services:
-  # 1. Le Broker Réseau
+  # 1. Le Broker Réseau (Configuré avec stockage sur disque persistant)
   rabbitmq:
     image: rabbitmq:3-management
     environment:
       - RABBITMQ_DEFAULT_USER=user
       - RABBITMQ_DEFAULT_PASS=password
+    volumes:
+      # SOLUTION v2 : Simulation du PVC Kubernetes pour écrire physiquement les données sur disque
+      - rabbitmq_persistent_data:/var/lib/rabbitmq
 
   # 2. Votre brique IA (compilée automatiquement à partir de votre Dockerfile)
   ia-analyzer:
@@ -27,7 +28,7 @@ services:
     depends_on:
       - rabbitmq
 
-  # 4. Le conteneur éphémère qui exécute notre script de test
+  # 4. Le conteneur éphémère qui exécute votre script de test d'observabilité
   tester:
     build: .
     command: python test_observability.py
@@ -35,4 +36,8 @@ services:
     depends_on:
       - ia-analyzer
       - generator
+
+# SOLUTION v2 : Déclaration du volume persistant global qui survit aux crashs de conteneurs
+volumes:
+  rabbitmq_persistent_data:
 
