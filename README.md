@@ -1,10 +1,20 @@
-# 📡 CloudIA : Architecture Souveraine & IA pour la Supervision Télécom
+# 📡 CloudIA : Architecture Souveraine & IA pour la Supervision Télécom (Version v1_limit)
 
 > 📊 **Note d'architecture :** Le schéma détaillé de cette infrastructure Cloud-Native est disponible au format vectoriel dans le fichier `schema-architecture.pdf` à la racine de ce dépôt.
 
-Ce projet implémente un prototype industriel d'**architecture Cloud-Native, asynchrone (Event-Driven) et monitorée** dédiée à la détection d'anomalies en temps réel sur des flux de télécommunications (ex: supervision d'antennes 5G). 
+## 🚨 Contexte, Situation & Limites détectées (v1_limit)
 
-L'intégralité du système est conçue pour tourner sur une infrastructure souveraine conteneurisée et dispose d'un pipeline d'automatisation CI/CD complet.
+### 1. La Situation Évaluée
+Cette branche correspond à notre architecture initiale (**v1**). Le système intègre un pipeline *Event-Driven* découplé et une IA d'analyse en continu. Cependant, cette configuration souffre d'un défaut critique de robustesse face aux incidents d'infrastructures lourds (pannes matérielles, coupures électriques, crashs de nœuds).
+
+### 2. Le Problème & La Limite v1
+Le court-circuit ou l'extinction brutale du Broker RabbitMQ entraîne une **perte sèche et définitive de la totalité des messages en transit** (métriques d'antennes 5G). 
+*   **Mode Stateless Volatile :** La file d'attente réseau n'écrit aucune donnée sur un disque persistant. Tout réside en mémoire vive (RAM).
+*   **Aquitf Automatique Périlleux :** L'IA consomme les messages avec le flag `auto_ack=True`. Le Broker supprime le paquet de sa mémoire dès qu'il l'envoie sur le réseau, sans attendre de savoir si l'IA a réussi son calcul ou si le conteneur a crashé.
+*   **Preuve par la CI/CD :** Notre pipeline d'intégration continue bloque et passe volontairement au **ROUGE ❌** sur cette branche, prouvant de manière factuelle la vulnérabilité du système lors d'un crash simulé.
+
+### 🛠️ Fichiers impactés & Opérations effectuées
+*   `test_observability.py` : Entièrement récrit pour intercepter le démarrage du pipeline, injecter une commande système de coupure immédiate (`docker stop cloudia-rabbitmq-1`), simuler la perte de la RAM et renvoyer un code d'erreur `1` pour bloquer la CI/CD.
 
 ---
 
@@ -14,70 +24,38 @@ L'architecture est découpée en microservices découplés afin d'isoler les res
 
 ```mermaid
 graph LR
-    Generator(generator.py) -- AMQP / Port 5672 --> Broker(RabbitMQ Service)
-    Broker -- Ingestion Flux --> IA(app.py / Isolation Forest)
+    Generator(generator.py) -- AMQP / Port 5672 --> Broker(RabbitMQ Service Volatile)
+    Broker -- Ingestion Flux / auto_ack=True --> IA(app.py / Isolation Forest)
     IA -- Metrics / Port 8000 --> Prometheus(Prometheus Service)
     Prometheus --> Grafana(Port 3000 / Dashboards)
 ```
 
 ### 🐍 Composants Applicatifs (Python)
-*   `app.py` : Le cœur analytique du système. Il entraîne un modèle d'IA algorithmique (**Isolation Forest**) pour détecter les comportements réseau anormaux, consomme le flux de messages RabbitMQ de manière résiliente et expose des métriques applicatives au format standard **Prometheus**.
-*   `generator.py` : Le simulateur réseau. Il simule un équipement de terrain (ex: Antenne de transmission d'Élancourt) et injecte en continu des métriques de trafic (paquets, erreurs, latence) ainsi que des anomalies transitoires dans le broker.
-*   `test_observability.py` : La sonde de test automatique utilisée par la CI. Elle interroge le serveur de métriques de l'IA pour valider que les données transitent correctement et que le système est 100 % observable avant tout déploiement.
+*   `app.py` : Le cœur analytique du système (Isolation Forest). Consomme le flux RabbitMQ en mode volatil sans validation de traitement et expose ses métriques.
+*   `generator.py` : Le simulateur réseau. Injecte les paquets en continu sans demander de garantie d'écriture au broker.
+*   `test_observability.py` : La sonde de crash-test. Elle coupe le conteneur RabbitMQ en plein vol pour démontrer la perte d'observabilité et de données.
 
 ### 📦 Configuration Infrastructure & Cloud (Kubernetes & Docker)
-*   `Dockerfile` : Spécifie l'empaquetage standardisé (image Linux ultra-légère, dépendances et scripts) de notre brique d'IA pour la rendre portable et hautement disponible.
-*   `deployment.yaml` : Manifeste déclaratif Kubernetes assurant la résilience, le dimensionnement (replicas) et la gestion stricte des ressources (limites CPU/RAM) de l'IA.
-*   `prometheus-link.yaml` : Déclare un `Service` réseau et un `PodMonitor` Kubernetes pour orchestrer la collecte automatique (*scraping*) des métriques par Prometheus toutes les 5 secondes.
-*   `requirements.txt` : Centralise les versions strictes des bibliothèques nécessaires (`scikit-learn`, `pika`, `prometheus-client`, `requests`).
+*   `Dockerfile` : Spécifie l'empaquetage standardisé de la brique d'IA.
+*   `deployment.yaml` : Manifeste déclaratif Kubernetes assurant la résilience et le dimensionnement de l'IA.
+*   `prometheus-link.yaml` : Déclare un `Service` réseau et un `PodMonitor` Kubernetes pour orchestrer la collecte automatique des métriques.
+*   `requirements.txt` : Centralise les versions strictes des bibliothèques nécessaires.
 
 ### ⚙️ Automatisation (DevOps / MLOps)
-*   `docker-compose.test.yml` : Orchestre le laboratoire de test與 isolé en instanciant simultanément RabbitMQ, le Générateur, l'IA et le Testeur avec une configuration réseau dédiée.
-*   `.github/workflows/ci-cd.yaml` : La feuille de route de notre pipeline **GitHub Actions**. Elle sépare strictement l'Intégration Continue (CI - vérification de la syntaxe et tests d'intégration de bout en bout sans cache) du Déploiement Continu (CD - packaging automatique de l'image de production `latest`).
+*   `docker-compose.test.yml` : Orchestre le laboratoire de test與 isolé sans aucun montage de volume disque pour RabbitMQ.
+*   `.github/workflows/ci-cd.yaml` : La feuille de route de notre pipeline **GitHub Actions**. Elle exécute le scénario et isole le blocage de la CI.
 
 ---
 
-## 🚀 Procédure d'Exploitation du Livrable
+## 🚀 Procédure d'Exploitation du Livrable (Démonstration du Crash)
 
 ### 🛠️ Prérequis
 *   Docker & Docker Compose
-*   Un cluster Kubernetes local (**Kind** ou K3s)
-*   Helm v3
 
-### 1. Validation de l'environnement (Mode Intégration Continue)
-Pour vérifier que l'ensemble du pipeline fonctionne instantanément sur n'importe quelle machine sans avoir à configurer Kubernetes à la main :
+### 1. Constater l'effondrement du système (Mode Intégration Continue)
+Pour exécuter le scénario de test et voir la limite de la V1 s'activer :
 ```bash
-# Force le build sans cache et lance le scénario de test
 docker compose -f docker-compose.test.yml build --no-cache
 docker compose -f docker-compose.test.yml up --abort-on-container-exit --exit-code-from tester
 ```
-*Le système va s'allumer, exécuter le test d'intégration, valider l'observabilité en vérifiant que le volume de paquets augmente, puis s'éteindre proprement avec un code de succès (0).*
-
-### 2. Déploiement sur le Cluster Kubernetes Local (Kind)
-Pour déployer l'infrastructure de supervision résiliente dans votre cluster de production :
-
-```bash
-# A. Déploiement du Broker RabbitMQ via Helm
-helm repo add bitnami https://bitnami.com
-helm repo update
-helm install telecom-broker bitnami/rabbitmq --set auth.username=user --set auth.password=password
-
-# B. Injection de l'image IA finale dans Kind et déploiement du pod
-kind load docker-image telecom-ia:latest --name telecom-cluster
-kubectl apply -f deployment.yaml
-
-# C. Activation du lien d'Observabilité pour Prometheus
-kubectl apply -f prometheus-link.yaml
-```
-
-### 3. Visualisation de la Supervision (Grafana)
-Ouvrez un tunnel réseau sécurisé vers votre serveur Grafana d'infrastructure :
-```bash
-kubectl port-forward svc/telecom-monitor-grafana 3000:80
-```
-Rendez-vous sur votre navigateur à l'adresse `http://localhost:3000` (Identifiants : `admin` / `admin`). 
-
-Vous pouvez ajouter une visualisation et utiliser la requête **PromQL** suivante pour afficher votre courbe d'alertes IA en temps réel :
-```promql
-rate(telecom_anomalies_detected_total[1m])
-```
+*Le système va démarrer, analyser les premiers paquets, RabbitMQ va être stoppé, les métriques vont s'interrompre et le conteneur de test va s'éteindre avec un code d'erreur (1), faisant échouer le dépôt GitHub.*
