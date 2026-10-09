@@ -4,7 +4,7 @@
 
 ## 🏗️ Contexte, Situation & Solution développée (v2)
 
-### 1. La Situation Inituelle
+### 1. La Situation Initialle
 Faisant suite aux vulnérabilités identifiées dans la version `v1_limit` (où toute coupure matérielle effaçait les données en transit), cette version **v2** implémente une refonte complète de la persistance des données et de la sécurité des transactions.
 
 ### 2. La Solution de Robustesse Déployée
