@@ -4,7 +4,7 @@
 
 ## 🏗️ Contexte, Situation & Architecture Déployée (v2)
 
-### 1. La Situation Initiale & Description Technique du Problème Rélobu
+### 1. La Situation Initiale & Description Technique du Problème Résolu
 Faisant suite aux vulnérabilités identifiées dans la version `v1_limit`, notre pipeline de supervision souffrait d'un défaut structurel majeur : **la perte sèche de l'intégralité des messages télécoms en transit** en cas de panne matérielle ou électrique du Broker de messages. 
 
 D'un point de vue mécanique, cette faille reposait sur trois facteurs techniques :
