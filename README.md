@@ -2,19 +2,24 @@
 
 > 📊 **Note d'architecture :** Le schéma détaillé de cette infrastructure Cloud-Native est disponible au format vectoriel dans le fichier `schema-architecture.pdf` à la racine de ce dépôt.
 
-## 🏗️ Contexte, Situation & Solution développée (v2)
+## 🏗️ Contexte, Situation & Architecture Déployée (v2)
 
-### 1. La Situation Initialle
-Faisant suite aux vulnérabilités identifiées dans la version `v1_limit` (où toute coupure matérielle effaçait les données en transit), cette version **v2** implémente une refonte complète de la persistance des données et de la sécurité des transactions.
+### 1. La Situation Initiale & Description Technique du Problème Rélobu
+Faisant suite aux vulnérabilités identifiées dans la version `v1_limit`, notre pipeline de supervision souffrait d'un défaut structurel majeur : **la perte sèche de l'intégralité des messages télécoms en transit** en cas de panne matérielle ou électrique du Broker de messages. 
+
+D'un point de vue mécanique, cette faille reposait sur trois facteurs techniques :
+1.  **Volatilité AMQP par défaut :** La file d'attente réseau possédait le paramètre `durable=False` et le simulateur publiait des messages transitoires (`delivery_mode=1`), forçant le stockage exclusif des métriques dans la mémoire vive (RAM) de RabbitMQ. Tout crash vidait la file.
+2.  **Acquittement automatique (`auto_ack=True`) :** Le broker supprimait le paquet de ses registres dès son émission sur le réseau vers le conteneur d'IA, sans attendre de validation. Si l'IA subissait un dysfonctionnement en plein calcul, le message était perdu à jamais.
+3.  **Stockage éphémère :** Le laboratoire Docker Compose n'utilisait aucun volume persistant, interdisant toute reprise après sinistre.
 
 ### 2. La Solution de Robustesse Déployée
-Pour garantir l'objectif de **zéro perte de données**, trois couches de sécurité industrielles ont été couplées :
-*   **Persistance Physique (Infrastructure) :** Simulation d'un pattern **StatefulSet Kubernetes** associé à un **PersistentVolumeClaim (PVC)**. Nous utilisons un volume de stockage persistant Docker qui écrit physiquement la file d'attente sur le disque dur de la machine hôte.
-*   **Durabilité AMQP (Broker) :** La file d'attente est déclarée immuable (`durable=True`) et le simulateur marque chaque message comme hautement persistant (`delivery_mode=2`). Si le serveur s'éteint, les données restent gravées sur le disque.
-*   **Acquittement Transactionnel (Application) :** Passage au mode `auto_ack=False`. Le pod d'IA n'envoie son reçu de traitement (`ch.basic_ack`) **qu'une fois que l'algorithme d'IA a terminé sa prédiction**. Si le conteneur IA meurt au milieu du calcul, RabbitMQ conserve le message et le donne au pod suivant.
+Pour garantir l'objectif de **zéro perte de données**, trois couches de sécurité industrielles ont été couplées dans cette version **v2** :
+*   **Persistance Physique (Infrastructure) :** Simulation d'un pattern **StatefulSet Kubernetes** associé à un **PersistentVolumeClaim (PVC)**. Nous avons implémenté un volume de stockage persistant global Docker qui écrit physiquement les registres de la file d'attente sur le disque dur de la machine hôte.
+*   **Durabilité AMQP (Broker) :** La file d'attente est configurée en mode immuable (`durable=True`) et le simulateur applique le tag `delivery_mode=2` (Message Persistant) dans les propriétés Pika. Si le serveur s'éteint, les données restent gravées sur disque.
+*   **Acquittement Transactionnel (Application) :** Passage au mode `auto_ack=False`. Le pod d'IA n'envoie son reçu de traitement (`ch.basic_ack`) **qu'une fois que l'algorithme d'IA a terminé avec succès sa prédiction**. Si le conteneur IA meurt au milieu du calcul, RabbitMQ conserve le message et le distribue automatiquement au pod suivant dès son redémarrage.
 
 ### 🛠️ Fichiers touchés & Opérations effectuées
-*   `app.py` : Ajout d'une boucle de reconnexion automatique (`Retry Loop`), passage de la file en `durable=True`, et implémentation de `ch.basic_ack` manuel.
+*   `app.py` : Intégration d'une boucle de reconnexion automatique (`Retry Loop`), configuration de la file en `durable=True`, et implémentation de la validation manuelle `ch.basic_ack`.
 *   `generator.py` : Passage de la file en durable et forçage de l'envoi persistant via `delivery_mode=2`.
 *   `docker-compose.test.yml` : Ajout de la section `volumes` et montage de la base de données `/var/lib/rabbitmq` sur le disque persistant global `rabbitmq_persistent_data`.
 *   `test_observability.py` : Récriture complète du scénario de test. Il coupe RabbitMQ (`docker stop`), attend l'interruption, le rallume (`docker start`), vérifie la reconnexion automatique de l'IA et valide que le traitement reprend là où il s'était arrêté sans perdre de message (Le pipeline passe au **VERT 🎉**).
@@ -38,7 +43,7 @@ graph LR
 
 ### 📦 Configuration Infrastructure & Cloud (Kubernetes & Docker)
 *   `Dockerfile` : Image de conteneurisation de la brique analytique IA.
-*   `deployment.yaml` : Manifeste déclaratif Kubernetes (Ressources limitées et résilience de l'IA).
+*   `deployment.yaml` : Manifeste déclaratif Kubernetes (Déploiement de base de l'IA).
 *   `prometheus-link.yaml` : Orchestration du scraping Prometheus toutes les 5 secondes.
 *   `requirements.txt` : Liste des dépendances strictes (`scikit-learn`, `pika`, `prometheus-client`, `requests`).
 
@@ -70,7 +75,7 @@ helm repo add bitnami https://bitnami.com
 helm repo update
 helm install telecom-broker bitnami/rabbitmq --set auth.username=user --set auth.password=password
 
-# B. Injection de l'image IA finale v2 validée dans Kind et déploiement
+# B. Injection de l'image IA finale v2 validée dans Kind et déploiement du pod
 kind load docker-image telecom-ia:latest --name telecom-cluster
 kubectl apply -f deployment.yaml
 
@@ -86,3 +91,21 @@ Utilisez la requête **PromQL** sur `http://localhost:3000` (admin/admin) pour v
 ```promql
 rate(telecom_anomalies_detected_total[1m])
 ```
+
+---
+
+## 🛑 Limite Majeure de la Version v2 : Le Piège de la Contention de Ressources (Resource Contention)
+
+Bien que la v2 protège l'intégrité de nos flux de données, elle présente une **vulnérabilité architecturale sévère lors du passage à l'échelle analytique**. 
+
+L'algorithme actuel `Isolation Forest` est léger en calcul. Cependant, si le projet évolue et bascule sur un modèle d'apprentissage profond (**Deep Learning** de type LSTM ou réseau de neurones convolutif lourd) pour analyser les paquets, le traitement devient extrêmement intensif en ressources matérielles.
+
+### Description Technique de la Limite (`v2_limit`) :
+Actuellement, notre fichier `deployment.yaml` ne contient **aucune directive d'isolation ou de bridage des ressources**. Le conteneur d'IA s'exécute avec le niveau de QoS (*Quality of Service*) le plus faible de Kubernetes : **BestEffort**.
+
+Si le modèle d'IA subit un pic de charge ou une injection massive de données :
+*   **Starvation CPU/RAM :** Le microservice d'IA va s'approprier de manière incontrôlée 100% des capacités de calcul (CPU) et de la mémoire vive (RAM) du nœud physique hôte sous-jacent.
+*   **Crash des composants critiques par effet de bord :** N'ayant plus accès aux cycles CPU, le pod **RabbitMQ** colocalisé sur le même serveur va crasher par étouffement réseau. De la même façon, le pod **Prometheus** verra ses requêtes HTTP de scraping expirer (*Timeout*), rendant le tableau de bord Grafana aveugle.
+*   **Risque d'OOM Killing en cascade :** Sans limites strictes, le noyau Linux de l'infrastructure détruira arbitrairement les pods prioritaires pour préserver le serveur, provoquant un effondrement complet du cluster.
+
+*Cette faille fondamentale servira de base à notre prochaine version (**v2_limit** / **v3**), dans laquelle nous implémenterons l'isolation cgroups via la maîtrise des configurations `limits` et `requests` de Kubernetes.*
