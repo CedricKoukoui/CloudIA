@@ -1,6 +1,9 @@
 # 📡 CloudIA : Architecture Souveraine & IA pour la Supervision Télécom (Version v1_limit)
 
-> 📊 **Note d'architecture :** Le schéma détaillé de cette infrastructure Cloud-Native est disponible au format vectoriel dans le fichier `schema-architecture.pdf` à la racine de ce dépôt.
+> 📊 **Note d'architecture :** Le schéma détaillé de cette infrastructure Cloud-Native est disponible ci-dessous et au format vectoriel dans le fichier `schema-architecture.pdf` à la racine de ce dépôt.
+
+![Schéma d'Architecture V1 Limit](./schema-architecture-v1-limit.png)
+
 
 ## 🚨 Contexte, Situation & Limites Détectées (v1_limit)
 
