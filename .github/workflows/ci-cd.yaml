@@ -2,9 +2,9 @@ name: Telecom IA Cloud-Native CI/CD
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "v1_limit" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "v1_limit" ]
 
 jobs:
   validate-and-test:
@@ -13,7 +13,7 @@ jobs:
     steps:
     # 1. Récupération du code du dépôt
     - name: Checkout code
-      uses: actions/checkout@v1
+      uses: actions/checkout@v1_limit
 
     # 2. Configuration de l'environnement Python
     - name: Set up Python
