@@ -1,14 +1,14 @@
 version: '3.8'
 
 services:
-  # 1. Le Broker Réseau
+  # 1. Le Broker Réseau Volatile (Sans volume persistant pour la v1_limit)
   rabbitmq:
     image: rabbitmq:3-management
     environment:
       - RABBITMQ_DEFAULT_USER=user
       - RABBITMQ_DEFAULT_PASS=password
 
-  # 2. Votre brique IA (compilée automatiquement à partir de votre Dockerfile)
+  # 2. Brique IA
   ia-analyzer:
     build: .
     ports:
@@ -27,12 +27,11 @@ services:
     depends_on:
       - rabbitmq
 
-  # 4. Le conteneur éphémère qui exécute notre script de test
+  # 4. Le conteneur éphémère de test
   tester:
     build: .
     command: python test_observability.py
-    network_mode: "host" # Permet de scanner le port 8000 de l'IA facilement
+    network_mode: "host"
     depends_on:
       - ia-analyzer
-      - generator
-
+      - generator     
