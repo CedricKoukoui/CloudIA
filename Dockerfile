@@ -8,8 +8,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copie du script d'IA
-COPY app.py .
+# 🚀 LA CORRECTION : On copie TOUT le dossier CloudIA (app.py, generator.py, etc.)
+COPY . .
 
 # Commande d'exécution du script
 CMD ["python", "app.py"]

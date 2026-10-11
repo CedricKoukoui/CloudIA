@@ -47,38 +47,44 @@ if not connection:
 
 channel = connection.channel()
 
-# SOLUTION v2 : On déclare la file d'attente comme DURABLE (alignement avec l'infrastructure)
-channel.queue_declare(queue='telecom_traffic', durable=True)
+# 🚀 APPROCHE PASSSIVE v2 : L'IA écoute la file existante initialisée par le générateur
+# On ne supprime rien et on ne redéclare rien pour éviter les conflits de droits.
+print("✅ Connexion AMQP établie. Liaison avec la file 'telecom_traffic'...")
 
 # ---------------
 # 2. Traitement du flux de production en continu
 
 def callback(ch, method, properties, body):
-    # Réception du message contenant les métriques réseau
-    data = json.loads(body)
-    
-    # Extraction des métriques
-    metrics = np.array([[data['packets'], data['errors'], data['latency']]])
-    
-    # Prédiction de l'IA
-    prediction = clf.predict(metrics)
+    try:
+        # Réception du message contenant les métriques réseau
+        data = json.loads(body)
+        
+        # Extraction des métriques
+        metrics = np.array([[data['packets'], data['errors'], data['latency']]])
+        
+        # Prédiction de l'IA
+        prediction = clf.predict(metrics)
 
-    # Incrémentation des métriques Cloud Native
-    TRAFFIC_COUNTER.inc()
-    if prediction == -1:
-        ANOMALY_COUNTER.inc()
-        status = "🚨 ANOMALIE"
-    else:
-        status = "🟢 Normal"	
+        # Incrémentation des métriques Cloud Native
+        TRAFFIC_COUNTER.inc()
+        if prediction == -1:
+            ANOMALY_COUNTER.inc()
+            status = "🚨 ANOMALIE"
+        else:
+            status = "🟢 Normal"	
 
-    print(f"[{status}] Source: {data['source']} -> Paquets: {data['packets']}, Erreurs: {data['errors']}%, Latence: {data['latency']}ms")
+        print(f"[{status}] Source: {data['source']} -> Paquets: {data['packets']}, Erreurs: {data['errors']}%, Latence: {data['latency']}ms")
 
-    # SOLUTION v2 : On envoie l'acquittement manuel (ACK) UNIQUEMENT après le traitement de l'IA
-    ch.basic_ack(delivery_tag=method.delivery_tag)
+    except Exception as e:
+        print(f"⚠️ Erreur lors de l'analyse du message : {e}")
+        
+    finally:
+        # SOLUTION v2 : On envoie toujours l'acquittement pour éviter de bloquer la file
+        ch.basic_ack(delivery_tag=method.delivery_tag)
 
-print("📥 En attente de flux réseau sur la file durable 'telecom_traffic'...")
+print("📥 En attente de flux réseau sur la file 'telecom_traffic'...")
 
-# SOLUTION v2 : Désactivation de auto_ack (auto_ack=False) pour activer la sécurité de rétention
+# L'IA consomme la file configurée par le générateur
 channel.basic_consume(queue='telecom_traffic', on_message_callback=callback, auto_ack=False)
 channel.start_consuming()
 

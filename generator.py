@@ -25,7 +25,14 @@ if not connection:
 
 channel = connection.channel()
 
-# SOLUTION v2 : On déclare la file d'attente comme DURABLE (surit à l'arrêt du broker)
+# 🚀 NETTOYAGE AUTOMATIQUE V2 : Supprime la file corrompue de la v1 avant de la recréer proprement
+try:
+    print("🧹 Nettoyage de l'ancien historique de la file...")
+    channel.queue_delete(queue='telecom_traffic')
+except Exception as e:
+    pass
+
+# SOLUTION v2 : On déclare la file d'attente comme DURABLE (survit à l'arrêt du broker)
 channel.queue_declare(queue='telecom_traffic', durable=True)
 print("🟢 Connecté avec succès à RabbitMQ. Début de l'envoi du flux persistant...")
 
