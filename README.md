@@ -59,6 +59,40 @@ kubectl apply -f prometheus-link.yaml
 *   **Terminal 1 :** tunnel réseau RabbitMQ
 ```bash
     kubectl port-forward svc/telecom-broker-rabbitmq 5672:5672
+  --set auth.username=user \
+  --set auth.password=password \
+  --set replicaCount=1
+
+kubectl apply -f deployment.yaml
+kubectl apply -f prometheus-link.yaml
+```
+
+### 3. Orchestration (3 terminaux requis)
+
+*   **Terminal 1 :** tunnel réseau RabbitMQ
+```bash
+    kubectl port-forward svc/telecom-broker-rabbitmq 5672:5672
+```
+
+### 4. Schéma d'architecture de V2-limit
+![Schéma d'Architecture V2-limit](./schema-architecture-v2limit.png)
+
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+helm install telecom-broker bitnami/rabbitmq \
+  --set auth.username=user \
+  --set auth.password=password \
+  --set replicaCount=1
+
+kubectl apply -f deployment.yaml
+kubectl apply -f prometheus-link.yaml
+```
+
+### 3. Orchestration (3 terminaux requis)
+
+*   **Terminal 1 :** tunnel réseau RabbitMQ
+```bash
+    kubectl port-forward svc/telecom-broker-rabbitmq 5672:5672
 ```
 
 ### 4. Schéma d'architecture de V2-limit
