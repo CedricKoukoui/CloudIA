@@ -4,6 +4,10 @@
 
 Ce projet implémente un prototype d'architecture Cloud-Native, asynchrone (Event-Driven) et monitorée, dédiée à la détection d'anomalies quasi temps réel sur des flux de télécommunications.
 
+![Schéma d'Architecture V2](./schema-architecture-v2.png)
+
+![Schéma d'Architecture V2-limit](./schema-architecture-v2limit.png)
+
 ## 🏗️ Cartographie de l'Architecture & Rôle des Fichiers
 
 L'architecture est découpée en microservices découplés :
