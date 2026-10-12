@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telecom-generator-deployment
+  labels:
+    app: telecom-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: telecom-generator
+  template:
+    metadata:
+      labels:
+        app: telecom-generator
+    spec:
+      containers:
+      - name: generator
+        image: telecom-ia:latest
+        imagePullPolicy: Never
+        # 🚀 On force l'exécution du script de simulation réseau
+        command: ["python", "generator.py"]
+        env:
+        - name: RABBITMQ_URL
+          value: "amqp://user:password@telecom-broker-rabbitmq:5672/%2F"
+
