@@ -6,7 +6,6 @@ Ce projet implémente un prototype d'architecture Cloud-Native, asynchrone (Even
 
 ![Schéma d'Architecture V2](./schema-architecture-v2.png)
 
-
 ## 🏗️ Cartographie de l'Architecture & Rôle des Fichiers
 
 L'architecture est découpée en microservices découplés :
@@ -59,126 +58,32 @@ kubectl apply -f prometheus-link.yaml
 *   **Terminal 1 :** tunnel réseau RabbitMQ
 ```bash
     kubectl port-forward svc/telecom-broker-rabbitmq 5672:5672
-  --set auth.username=user \
-  --set auth.password=password \
-  --set replicaCount=1
-
-kubectl apply -f deployment.yaml
-kubectl apply -f prometheus-link.yaml
 ```
-
-### 3. Orchestration (3 terminaux requis)
-
-*   **Terminal 1 :** tunnel réseau RabbitMQ
+*   **Terminal 2 :** lancement du générateur
 ```bash
-    kubectl port-forward svc/telecom-broker-rabbitmq 5672:5672
-helm repo add bitnami https://charts.bitnami.com/bitnami
-helm repo update
-helm install telecom-broker bitnami/rabbitmq \
-  --set auth.username=user \
-  --set auth.password=password \
-  --set replicaCount=1
-
-kubectl apply -f deployment.yaml
-kubectl apply -f prometheus-link.yaml
+    python3 generator.py
 ```
-
-### 3. Orchestration (3 terminaux requis)
-
-*   **Terminal 1 :** tunnel réseau RabbitMQ
+*   **Terminal 3 :** tunnel réseau Grafana
 ```bash
-    kubectl port-forward svc/telecom-broker-rabbitmq 5672:5672
+    kubectl port-forward svc/telecom-monitor-grafana 3000:80
 ```
 
-### 4. Schéma d'architecture de V2-limit
+### 4. Visualisation
+
+Accès à Grafana sur `http://127.0.0.1:3000` (admin / admin) pour afficher les courbes de trafic et d'anomalies via Prometheus :
+
+```promql
+sum(rate(telecom_anomalies_detected_total[1m]))
+```
+
+## 🔍 Point de Situation Technique & Limites
+
+Les fichiers (`Dockerfile`, `deployment.yaml`, `app.py`, `generator.py`) ont été stabilisés pour assurer un fonctionnement nominal.
+
+Une limite subsiste : le générateur s'exécutant **hors du cluster**, la suppression du pod RabbitMQ coupe net le tunnel (`port-forward`) et le flux. Cela empêche l'accumulation de messages et le « rebond » de rattrapage au redémarrage.
+
+### Schéma d'architecture de la v2-limit
+
 ![Schéma d'Architecture V2-limit](./schema-architecture-v2limit.png)
 
-
-
-  --set auth.username=user \
-  --set auth.password=password \
-  --set replicaCount=1
-
-kubectl apply -f deployment.yaml
-kubectl apply -f prometheus-link.yaml
-```
-
-### 3. Orchestration (3 terminaux requis)
-
-*   **Terminal 1 :** tunnel réseau RabbitMQ
-```bash
-    kubectl port-forward svc/telecom-broker-rabbitmq 5672:5672
-
-kind load docker-image telecom-ia:v1 --name telecom-cluster
-
-helm repo add bitnami https://charts.bitnami.com/bitnami
-helm repo update
-helm install telecom-broker bitnami/rabbitmq \
-  --set auth.username=user \
-  --set auth.password=password \
-  --set replicaCount=1
-
-kubectl apply -f deployment.yaml
-kubectl apply -f prometheus-link.yaml
-```
-
-### 3. Orchestration (3 terminaux requis)
-
-*   **Terminal 1 :** tunnel réseau RabbitMQ
-```bash
-    kubectl port-forward svc/telecom-broker-rabbitmq 5672:5672
-  --set auth.username=user \
-  --set auth.password=password \
-  --set replicaCount=1
-
-kubectl apply -f deployment.yaml
-kubectl apply -f prometheus-link.yaml
-```
-
-### 3. Orchestration (3 terminaux requis)
-
-*   **Terminal 1 :** tunnel réseau RabbitMQ
-```bash
-    kubectl port-forward svc/telecom-broker-rabbitmq 5672:5672
-```
-
-### 4. Schéma d'architecture de V2-limit
-![Schéma d'Architecture V2-limit](./schema-architecture-v2limit.png)
-
-helm repo add bitnami https://charts.bitnami.com/bitnami
-helm repo update
-helm install telecom-broker bitnami/rabbitmq \
-  --set auth.username=user \
-  --set auth.password=password \
-  --set replicaCount=1
-
-kubectl apply -f deployment.yaml
-kubectl apply -f prometheus-link.yaml
-```
-
-### 3. Orchestration (3 terminaux requis)
-
-*   **Terminal 1 :** tunnel réseau RabbitMQ
-```bash
-    kubectl port-forward svc/telecom-broker-rabbitmq 5672:5672
-```
-
-### 4. Schéma d'architecture de V2-limit
-![Schéma d'Architecture V2-limit](./schema-architecture-v2limit.png)
-
-
-
-  --set auth.username=user \
-  --set auth.password=password \
-  --set replicaCount=1
-
-kubectl apply -f deployment.yaml
-kubectl apply -f prometheus-link.yaml
-```
-
-### 3. Orchestration (3 terminaux requis)
-
-*   **Terminal 1 :** tunnel réseau RabbitMQ
-```bash
-    kubectl port-forward svc/telecom-broker-rabbitmq 5672:5672
-
+La version **v2bis** visera à intégrer le générateur directement dans le cluster.
