@@ -2,10 +2,15 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: telecom-generator-deployment
+  namespace: ingestion # 👈 Déplacé dans le compartiment réseau/ingestion
   labels:
     app: telecom-generator
 spec:
   replicas: 1
+  # Le quota 'ingestion' est presque saturé (RabbitMQ + générateur) : on évite le pod de surplus
+  # d'un rolling update, qui reste bloqué en cas d'erreur (ex. ImagePullBackOff).
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: telecom-generator
@@ -14,13 +19,23 @@ spec:
       labels:
         app: telecom-generator
     spec:
+      nodeSelector:
+        workload: ingestion # 👈 Pilier C : le générateur reste sur le worker "ingestion"
       containers:
       - name: generator
         image: telecom-ia:latest
-        imagePullPolicy: Never
-        # 🚀 On force l'exécution du script de simulation réseau
+        imagePullPolicy: Never # 👈 Image injectée par `kind load docker-image`, jamais téléchargée
         command: ["python", "generator.py"]
         env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
         - name: RABBITMQ_URL
-          value: "amqp://user:password@telecom-broker-rabbitmq:5672/%2F"
-
+          # 👈 DNS complet du Namespace ingestion
+          value: "amqp://user:password@telecom-broker-rabbitmq.ingestion.svc.cluster.local:5672/%2F"
+        resources: # 👈 Obligatoire pour passer le ResourceQuota du namespace
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"

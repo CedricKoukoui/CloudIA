@@ -1,0 +1,72 @@
+# Isolation réseau de la v3 : tout le trafic entrant est refusé par défaut dans les deux
+# namespaces, puis on ouvre uniquement les flux nécessaires.
+# NB : les NetworkPolicy ne filtrent que le trafic ENTRANT ici (policyTypes: Ingress).
+---
+# 1. Namespace ingestion : refus par défaut de tout trafic entrant
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: ingestion
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+# 2. RabbitMQ : AMQP (5672) uniquement depuis le générateur (même namespace) et l'IA (namespace ia)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-amqp-to-rabbitmq
+  namespace: ingestion
+spec:
+  podSelector:
+    matchLabels:
+      app: rabbitmq
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingestion
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ia
+    ports:
+    - protocol: TCP
+      port: 5672
+---
+# 3. Namespace ia : refus par défaut de tout trafic entrant
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: ia
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+# 4. IA : métriques (8000) uniquement depuis Prometheus.
+# La stack kube-prometheus-stack est installée dans le namespace "default" sur ce cluster :
+# si tu la déplaces (ex. namespace "monitoring"), change la valeur ci-dessous.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-scrape
+  namespace: ia
+spec:
+  podSelector:
+    matchLabels:
+      app: telecom-ia
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: default
+    ports:
+    - protocol: TCP
+      port: 8000

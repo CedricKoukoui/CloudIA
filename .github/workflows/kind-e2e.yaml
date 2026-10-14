@@ -1,0 +1,88 @@
+name: Kind E2E (manuel)
+
+# Test de résilience sur un vrai cluster Kind à 3 nœuds : labels, nodeSelector, ResourceQuotas,
+# NetworkPolicy, panne du broker. Plus lourd que la sonde Compose (≈ 10 min) : il ne tourne pas
+# à chaque push, mais à la demande (GitHub > Actions > "Kind E2E (manuel)" > Run workflow).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-resilience:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    # Le script de test n'a besoin que de "requests" (le reste tourne dans le cluster)
+    - name: Install test dependencies
+      run: pip install requests
+
+    - name: Create Kind cluster (3 nodes, labels from kind-config.yaml)
+      uses: helm/kind-action@v1.10.0
+      with:
+        config: kind-config.yaml
+        cluster_name: cloudia-v3
+
+    - name: Build and load image into Kind
+      run: |
+        docker build -t telecom-ia:latest .
+        kind load docker-image telecom-ia:latest --name cloudia-v3
+
+    # Seules les CRD sont installées (pas l'opérateur) : suffisant pour accepter le PodMonitor
+    - name: Install Prometheus Operator CRDs
+      run: |
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo update
+        helm install prometheus-operator-crds prometheus-community/prometheus-operator-crds
+
+    - name: Deploy namespaces, quotas and broker
+      run: |
+        kubectl apply -f 01-namespaces-quotas.yaml
+        kubectl apply -f rabbitmq-v3-persistant.yaml
+        kubectl rollout status statefulset/telecom-broker-rabbitmq -n ingestion --timeout=240s
+
+    - name: Deploy IA, generator, observability and network policies
+      run: |
+        kubectl apply -f deployment.yaml -f generator-deployment.yaml -f prometheus-link.yaml
+        kubectl apply -f 02-network-policy.yaml
+        kubectl rollout status deploy/telecom-ia-deployment -n ia --timeout=240s
+        kubectl rollout status deploy/telecom-generator-deployment -n ingestion --timeout=240s
+        kubectl get pods -A -o wide
+
+    # Pilier C : chaque pod doit tourner sur le worker au rôle attendu
+    - name: Check pod placement (nodeSelector)
+      run: |
+        check() {
+          node=$(kubectl get pod -n "$1" -l "$2" -o jsonpath='{.items[0].spec.nodeName}')
+          role=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.workload}')
+          echo "$2 -> $node (workload=$role, attendu=$3)"
+          [ "$role" = "$3" ]
+        }
+        check ia app=telecom-ia compute
+        check ingestion app=rabbitmq ingestion
+        check ingestion app=telecom-generator ingestion
+
+    # Supprime le broker et vérifie que le flux reprend ET que l'IA n'a pas redémarré
+    - name: Crash-test de résilience (suppression du broker)
+      env:
+        TEST_TIMEOUT: "180"
+      run: python test_observability.py
+
+    - name: Diagnostics (en cas d'échec)
+      if: failure()
+      run: |
+        kubectl get pods -A -o wide || true
+        kubectl describe pods -n ia || true
+        kubectl logs -n ia deploy/telecom-ia-deployment --tail=50 || true
+        kubectl logs -n ingestion deploy/telecom-generator-deployment --tail=50 || true
+        kubectl logs -n ingestion statefulset/telecom-broker-rabbitmq --tail=50 || true

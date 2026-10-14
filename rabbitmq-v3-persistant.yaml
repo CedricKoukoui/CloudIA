@@ -2,6 +2,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: rabbitmq-pvc
+  namespace: ingestion # 👈 Déplacé dans le compartiment réseau/ingestion
 spec:
   accessModes:
     - ReadWriteOnce
@@ -13,8 +14,9 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: telecom-broker-rabbitmq
+  namespace: ingestion # 👈 Déplacé dans le compartiment réseau/ingestion
 spec:
-  serviceName: "rabbitmq"
+  serviceName: "telecom-broker-rabbitmq"
   replicas: 1
   selector:
     matchLabels:
@@ -24,6 +26,8 @@ spec:
       labels:
         app: rabbitmq
     spec:
+      nodeSelector:
+        workload: ingestion # 👈 Pilier C : le broker est toujours recréé sur le même worker (celui de son PVC)
       containers:
       - name: rabbitmq
         image: rabbitmq:3-management
@@ -32,11 +36,18 @@ spec:
           name: amqp
         - containerPort: 15672
           name: management
-        environment:
+        env:
         - name: RABBITMQ_DEFAULT_USER
           value: "user"
         - name: RABBITMQ_DEFAULT_PASS
           value: "password"
+        resources: # 👈 Obligatoire pour passer le ResourceQuota du namespace ingestion
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
         volumeMounts:
         - name: rabbitmq-data
           mountPath: /var/lib/rabbitmq
@@ -48,7 +59,8 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: rabbitmq
+  name: telecom-broker-rabbitmq # 👈 Renommé pour correspondre aux URLs DNS de l'IA et du générateur
+  namespace: ingestion # 👈 Déplacé dans le compartiment réseau/ingestion
 spec:
   ports:
   - port: 5672
@@ -59,4 +71,3 @@ spec:
     name: management
   selector:
     app: rabbitmq
-

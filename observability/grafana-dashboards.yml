@@ -1,0 +1,12 @@
+# Indique à Grafana de charger les tableaux de bord présents dans /var/lib/grafana/dashboards
+# (monté depuis observability/cloudia-v3-dashboard.json).
+apiVersion: 1
+
+providers:
+  - name: cloudia
+    orgId: 1
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

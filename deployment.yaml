@@ -2,10 +2,15 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: telecom-ia-deployment
+  namespace: ia
   labels:
     app: telecom-ia
 spec:
-  replicas: 2
+  replicas: 1
+  # Le quota du namespace 'ia' est égal aux requests de l'unique pod : un rolling update
+  # ne pourrait pas créer le pod supplémentaire. Recreate arrête l'ancien pod avant.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: telecom-ia
@@ -14,16 +19,20 @@ spec:
       labels:
         app: telecom-ia
     spec:
+      nodeSelector:
+        workload: compute # 👈 Pilier C : l'IA ne tourne que sur le worker "compute"
       containers:
       - name: ia-analyzer
         image: telecom-ia:latest
-        imagePullPolicy: Never
+        imagePullPolicy: Never # 👈 Image injectée par `kind load docker-image`, jamais téléchargée
         ports:
         - containerPort: 8000
           name: metrics
         env:
+        - name: PYTHONUNBUFFERED # 👈 Force les logs en temps réel
+          value: "1"
         - name: RABBITMQ_URL
-          value: "amqp://user:password@telecom-broker-rabbitmq:5672/%2F"
+          value: "amqp://user:password@telecom-broker-rabbitmq.ingestion.svc.cluster.local:5672/%2F"
         resources:
           limits:
             cpu: "500m"

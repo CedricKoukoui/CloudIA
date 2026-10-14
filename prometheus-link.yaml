@@ -2,8 +2,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: telecom-ia-service
+  namespace: ia # 👈 Déplacé dans le namespace IA
   labels:
-    app: telecom-ia # Doit correspondre au label de votre déploiement
+    app: telecom-ia
 spec:
   ports:
   - port: 8000
@@ -16,13 +17,14 @@ apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
   name: telecom-ia-podmonitor
+  namespace: ia # 👈 L'opérateur Prometheus doit chercher le PodMonitor ici
   labels:
-    release: telecom-monitor # Crucial : lie ce moniteur à votre installation Helm Prometheus
+    release: telecom-monitor
 spec:
   selector:
     matchLabels:
       app: telecom-ia
   podMetricsEndpoints:
   - port: metrics
-    interval: 5s # Fréquence de collecte très rapide pour le test (5 secondes)
+    interval: 5s
 

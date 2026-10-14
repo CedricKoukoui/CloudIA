@@ -1,0 +1,40 @@
+---
+# 1. Namespace pour l'ingestion (RabbitMQ)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingestion
+---
+# Quotas pour le Namespace Ingestion (Sanctuarisation)
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: ingestion-quota
+  namespace: ingestion
+spec:
+  hard:
+    requests.cpu: "500m"
+    requests.memory: "512Mi"
+    limits.cpu: "1"
+    limits.memory: "1Gi"
+
+---
+# 2. Namespace pour l'IA
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ia
+---
+# Quotas pour le Namespace IA (Plafond pour éviter la Resource Contention)
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: ia-quota
+  namespace: ia
+spec:
+  hard:
+    requests.cpu: "250m"
+    requests.memory: "256Mi"
+    limits.cpu: "500m"
+    limits.memory: "512Mi"
+

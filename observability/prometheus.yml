@@ -1,0 +1,11 @@
+# Configuration Prometheus de l'environnement de test Compose.
+# Équivalent du PodMonitor de prometheus-link.yaml : l'IA est collectée toutes les 5 s.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: telecom-ia
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ia-analyzer:8000"]

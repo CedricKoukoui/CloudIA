@@ -1,43 +1,126 @@
+# Environnement de test local SANS cluster, jusqu'à Grafana (version v3).
+#
+# Il monte toute la chaîne : générateur -> RabbitMQ -> IA -> Prometheus -> Grafana, avec un
+# tableau de bord déjà provisionné. En quelques minutes (le premier lancement construit l'image et télécharge les images
+# publiques), il répond à la question : « est-ce que
+# tout fonctionne de bout en bout, jusqu'à la courbe affichée dans Grafana, y compris après la
+# perte brutale du broker ? »
+#
+# Ce qu'il reproduit de la v3 : les limites CPU/RAM (pilier A) et deux réseaux séparés, qui
+# jouent le rôle des namespaces et des NetworkPolicy (pilier B) :
+#   - réseau "ingestion"  : rabbitmq, generator, ia-analyzer
+#   - réseau "monitoring" : ia-analyzer, prometheus, grafana
+#   Le générateur ne peut donc pas joindre les métriques de l'IA, et Prometheus ne peut pas
+#   joindre le broker.
+#
+# Ce qu'il NE teste PAS (réservé au job "e2e-resilience" de la CI et au cluster Kind) :
+# ResourceQuotas, nodeSelector, PVC, vraies NetworkPolicy, throttling CPU mesuré par cAdvisor.
+#
+# Usage (depuis la racine du dépôt, avec le venv actif) :
+#   docker compose -f docker-compose.test.yml up -d --build --wait
+#   TEST_MODE=compose python3 test_observability.py
+#   docker compose -f docker-compose.test.yml down -v
+#
+# Le test est lancé depuis l'hôte (et non depuis un conteneur) car il doit tuer puis relancer
+# le conteneur RabbitMQ, ce qui demande la CLI docker.
+#
+# Ports publiés sur l'hôte : 8000 (métriques de l'IA), 9090 (Prometheus), 3000 (Grafana,
+# admin / admin), 15672 (console RabbitMQ, user / password).
+
+name: cloudia-v3-test
+
 services:
-  # 1. Le Broker Réseau (Configuré avec stockage sur disque persistant)
+  # 1. Le broker réseau, avec un volume pour que la file durable survive à l'arrêt du conteneur
   rabbitmq:
     image: rabbitmq:3-management
     environment:
       - RABBITMQ_DEFAULT_USER=user
       - RABBITMQ_DEFAULT_PASS=password
     volumes:
-      # SOLUTION v2 : Simulation du PVC Kubernetes pour écrire physiquement les données sur disque
       - rabbitmq_persistent_data:/var/lib/rabbitmq
+    cpus: 0.5          # mêmes limites que rabbitmq-v3-persistant.yaml
+    mem_limit: 512m
+    ports:
+      - "15672:15672"
+    networks: [ingestion]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 24
+      start_period: 15s
 
-  # 2. Votre brique IA (compilée automatiquement à partir de votre Dockerfile)
+  # 2. La brique IA (construite à partir du Dockerfile)
   ia-analyzer:
     build: .
+    environment:
+      - PYTHONUNBUFFERED=1
+      - RABBITMQ_URL=amqp://user:password@rabbitmq:5672/%2F
+    cpus: 0.5          # mêmes limites que deployment.yaml (pilier A)
+    mem_limit: 512m
     ports:
       - "8000:8000"
-    environment:
-      - RABBITMQ_URL=amqp://user:password@rabbitmq:5672/%2F
+    networks: [ingestion, monitoring]
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/metrics', timeout=2)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
 
-  # 3. Le générateur d'antenne télécom
+  # 3. Le générateur d'antenne télécom (RATE msg/s, tampon local pendant la panne)
   generator:
     build: .
     command: python generator.py
     environment:
+      - PYTHONUNBUFFERED=1
       - RABBITMQ_URL=amqp://user:password@rabbitmq:5672/%2F
+      - RATE=${RATE:-1}
+      - BUFFER_MAX=${BUFFER_MAX:-5000}
+    cpus: 0.2          # mêmes limites que generator-deployment.yaml
+    mem_limit: 256m
+    networks: [ingestion]
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
 
-  # 4. Le conteneur éphémère qui exécute votre script de test d'observabilité
-  tester:
-    build: .
-    command: python test_observability.py
-    network_mode: "host" # Permet de scanner le port 8000 de l'IA facilement
+  # 4. Prometheus : collecte les métriques de l'IA toutes les 5 s (comme le PodMonitor de la v3)
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks: [monitoring]
     depends_on:
       - ia-analyzer
-      - generator
 
-# SOLUTION v2 : Déclaration du volume persistant global qui survit aux crashs de conteneurs
+  # 5. Grafana : source de données et tableau de bord provisionnés au démarrage
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+    volumes:
+      - ./observability/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./observability/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./observability/cloudia-v3-dashboard.json:/var/lib/grafana/dashboards/cloudia-v3.json:ro
+    ports:
+      - "3000:3000"
+    networks: [monitoring]
+    depends_on:
+      - prometheus
+
+networks:
+  ingestion:
+  monitoring:
+
+# Volume persistant du broker : il survit aux crashs de conteneurs (équivalent du PVC de la v3)
 volumes:
   rabbitmq_persistent_data:
-
