@@ -1,0 +1,40 @@
+# Piliers A et B pour le namespace « default » (observabilité), ajoutés en v4.
+# Le namespace héberge Prometheus, Grafana, Alertmanager, l'opérateur, kube-state-metrics et
+# node-exporter. Sans plafond, un de ces composants pouvait consommer les ressources des autres.
+#
+# Dimensionnement du quota (somme des conteneurs de observability-values.yaml, 3 nœuds) :
+#   requests : 575m CPU / 1120Mi   ->  quota 1 CPU / 1536Mi
+#   limits   : 1300m CPU / 2240Mi  ->  quota 2 CPU / 3Gi
+# Marge d'environ 30 % : un pod de Grafana de plus pendant une mise à jour progressive,
+# et les conteneurs de courte durée (Jobs de l'opérateur).
+#
+# À appliquer APRÈS « helm upgrade » : kubectl apply -f 03-observability-quota.yaml
+---
+# Valeurs par défaut pour tout conteneur qui n'en déclare pas (sans cela, le ResourceQuota
+# refuserait un pod sans requests/limits, par exemple les Jobs de l'opérateur Prometheus).
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: observability-defaults
+  namespace: default
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: 100m
+      memory: 128Mi
+    defaultRequest:
+      cpu: 50m
+      memory: 64Mi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: observability-quota
+  namespace: default
+spec:
+  hard:
+    requests.cpu: "1"
+    requests.memory: 1536Mi
+    limits.cpu: "2"
+    limits.memory: 3Gi

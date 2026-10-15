@@ -1,0 +1,79 @@
+# Valeurs Helm de la stack d'observabilité (kube-prometheus-stack), version v4.
+# Elles reprennent pour Prometheus et Grafana les trois piliers de la v3 :
+#   A : requests / limits sur CHAQUE conteneur de la stack (cgroups)
+#   B : quota du namespace « default » (03-observability-quota.yaml) et volume dédié à Prometheus
+#   C : nodeSelector vers le worker « ingestion », donc jamais sur le worker « compute » de l'IA
+# et ajoutent la stratégie de rétention (Q13) : la TSDB de Prometheus ne peut pas saturer le disque.
+#
+# Toutes les valeurs de ressources sont des HYPOTHÈSES de départ (limits = 2 x requests ou plus),
+# à vérifier par la mesure (README section 13).
+#
+# Application (depuis la racine du dépôt) :
+#   helm upgrade telecom-monitor prometheus-community/kube-prometheus-stack \
+#     --version <version du chart déjà installé, voir "helm list"> -f observability-values.yaml
+
+prometheus:
+  prometheusSpec:
+    # --- Rétention (Q13) : la première limite atteinte déclenche la purge des plus anciens blocs ---
+    retention: 15d          # limite en durée
+    retentionSize: 1GB      # limite en taille : 50 % du volume (le reste sert au WAL et à la compaction)
+    walCompression: true    # réduit la taille du journal d'écriture (WAL) sur disque
+    # --- Pilier C ---
+    nodeSelector:
+      workload: ingestion
+    # --- Pilier A ---
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits:   { cpu: 500m, memory: 1Gi }
+    # --- Pilier B : volume dédié, la TSDB n'écrit plus dans le disque éphémère du nœud ---
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+
+grafana:
+  adminPassword: admin      # prototype uniquement (conserve le mot de passe de la v3 lors de l'upgrade)
+  nodeSelector:
+    workload: ingestion
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 200m, memory: 256Mi }
+  sidecar:                  # conteneurs qui rechargent tableaux de bord et sources de données
+    resources:
+      requests: { cpu: 25m, memory: 64Mi }
+      limits:   { cpu: 50m, memory: 128Mi }
+
+prometheusOperator:
+  nodeSelector:
+    workload: ingestion
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 100m, memory: 128Mi }
+  prometheusConfigReloader: # conteneur injecté dans les pods Prometheus et Alertmanager
+    resources:
+      requests: { cpu: 25m, memory: 32Mi }
+      limits:   { cpu: 50m, memory: 64Mi }
+
+alertmanager:
+  alertmanagerSpec:
+    nodeSelector:
+      workload: ingestion
+    resources:
+      requests: { cpu: 25m, memory: 64Mi }
+      limits:   { cpu: 100m, memory: 128Mi }
+
+kube-state-metrics:
+  nodeSelector:
+    workload: ingestion
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits:   { cpu: 50m, memory: 128Mi }
+
+# DaemonSet : un pod par nœud (3 dans Kind), donc pas de nodeSelector, mais des limites.
+prometheus-node-exporter:
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits:   { cpu: 50m, memory: 64Mi }

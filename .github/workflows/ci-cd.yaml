@@ -1,15 +1,15 @@
 name: Telecom IA Cloud-Native CI/CD
 
-# À chaque push (et pull request) sur main ou v3 :
+# À chaque push (et pull request) sur main, v3 ou v4 :
 #   CI : Linting          -> syntaxe Python, fichiers de configuration, manifestes Kubernetes
 #   CI : Test E2E         -> docker-compose.test.yml : générateur -> RabbitMQ -> IA -> Prometheus -> Grafana,
 #                            puis panne du broker et vérification de la reprise
 #   CD : Image du cluster -> construction, contrôle et publication de l'image (push uniquement)
 on:
   push:
-    branches: [ "main", "v3" ]
+    branches: [ "main", "v3", "v4" ]
   pull_request:
-    branches: [ "main", "v3" ]
+    branches: [ "main", "v3", "v4" ]
 
 permissions:
   contents: read
@@ -53,6 +53,40 @@ jobs:
         print("JSON valide : tableau de bord", d["uid"], "-", len(d["panels"]), "panneaux")
         PY
 
+    # v4 : la configuration d'observabilité doit rester cohérente (rétention, ressources, volume)
+    - name: Validate observability values (retention, resources, volume)
+      run: |
+        python - <<'PY'
+        import re, yaml
+        v = yaml.safe_load(open("observability-values.yaml", encoding="utf-8"))
+        def size(s):
+            m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(KB|MB|GB|KiB|MiB|GiB|Ki|Mi|Gi)", str(s))
+            k = {"KB": 1e3, "MB": 1e6, "GB": 1e9, "KiB": 2**10, "MiB": 2**20, "GiB": 2**30,
+                 "Ki": 2**10, "Mi": 2**20, "Gi": 2**30}[m.group(2)]
+            return float(m.group(1)) * k
+        spec = v["prometheus"]["prometheusSpec"]
+        pvc = spec["storageSpec"]["volumeClaimTemplate"]["spec"]["resources"]["requests"]["storage"]
+        ratio = size(spec["retentionSize"]) / size(pvc)
+        assert ratio <= 0.85, f"retentionSize ({spec['retentionSize']}) trop proche du volume ({pvc})"
+        print(f"Rétention : {spec['retention']} / {spec['retentionSize']} pour un volume de {pvc} ({ratio:.0%})")
+        composants = {
+            "prometheus": spec, "grafana": v["grafana"], "grafana.sidecar": v["grafana"]["sidecar"],
+            "prometheusOperator": v["prometheusOperator"],
+            "prometheusConfigReloader": v["prometheusOperator"]["prometheusConfigReloader"],
+            "alertmanager": v["alertmanager"]["alertmanagerSpec"],
+            "kube-state-metrics": v["kube-state-metrics"],
+            "prometheus-node-exporter": v["prometheus-node-exporter"],
+        }
+        for nom, c in composants.items():
+            for niveau in ("requests", "limits"):
+                assert c["resources"][niveau]["cpu"] and c["resources"][niveau]["memory"], f"{nom}: {niveau} incomplet"
+            print("Ressources déclarées :", nom)
+        for nom in ("prometheus", "grafana", "prometheusOperator", "kube-state-metrics"):
+            c = composants[nom]
+            assert c.get("nodeSelector", {}).get("workload") == "ingestion", f"{nom}: nodeSelector manquant"
+        print("nodeSelector : workers « ingestion »")
+        PY
+
     - name: Validate docker-compose.test.yml
       run: docker compose -f docker-compose.test.yml config -q
 
@@ -70,6 +104,7 @@ jobs:
           -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
           01-namespaces-quotas.yaml \
           02-network-policy.yaml \
+          03-observability-quota.yaml \
           rabbitmq-v3-persistant.yaml \
           deployment.yaml \
           generator-deployment.yaml \
