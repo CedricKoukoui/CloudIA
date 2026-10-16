@@ -222,11 +222,12 @@ Déclenchée à chaque push et pull request sur `main`, `v3` et `v4`. Pour la v4
 
 ## 13. Limites de la v4
 
-*   **Pas de sous-échantillonnage (downsampling).** La conservation à long terme avec agrégation (Thanos ou Cortex, stockage objet MinIO) est la cible d'architecture ; elle n'est pas déployée ici.
-*   **Valeurs non mesurées.** Les `requests/limits` du tableau de la section 4 et le débit d'ingestion de Prometheus sont des hypothèses. À vérifier avec la méthode des pastilles V1 à V3 du schéma d'architecture.
+
+*   **Valeurs non mesurées.** Les `requests/limits` du tableau de la section 4 et le débit d'ingestion de Prometheus sont des hypothèses. 
 *   **Quota du namespace `default`.** Il s'applique à tout pod créé dans ce namespace, pas seulement à la stack d'observabilité. Le `LimitRange` fournit des valeurs par défaut, mais un pod qui dépasserait le quota serait refusé.
 *   **Pas de haute disponibilité de Prometheus** : une seule réplique, sur un nœud.
 *   **Mac en veille :** la collecte s'interrompt (trous dans les courbes), comme en v3.
+*   **prefetch :  (prefetch** ≤ (mémoire disponible pour les messages) ÷ (taille d'un message) ) : correspond au nbre max de msgs qu'on peut avoir en attente du traitement du pod IA.  On peut s'n servir pour déterminer la mémoire disponible pour les messages.
 
 ---
 
