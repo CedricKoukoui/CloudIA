@@ -1,0 +1,71 @@
+# Règles d'alerte (v5) : donnent leur rôle à Alertmanager, kube-state-metrics et node-exporter.
+# Le label « release: telecom-monitor » est celui que Prometheus utilise pour découvrir les règles
+# (nom de la release Helm).
+#
+# Les alertes apparaissent dans Prometheus (/alerts) et dans l'interface d'Alertmanager. Aucun
+# destinataire (e-mail, Slack) n'est configuré : Alertmanager les affiche sans les envoyer.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cloudia-v5-alerts
+  namespace: default
+  labels:
+    release: telecom-monitor
+spec:
+  groups:
+  - name: cloudia.availability
+    rules:
+    # Q14 : un acteur malveillant (ou une erreur) met le déploiement de l'IA à 0 réplique.
+    # Le RBAC limite QUI peut le faire ; cette alerte détecte que quelqu'un l'a quand même fait.
+    - alert: IaScaledToZero
+      expr: kube_deployment_spec_replicas{namespace="ia",deployment="telecom-ia-deployment"} == 0
+      for: 30s
+      labels:
+        severity: critical
+      annotations:
+        summary: "L'IA a été mise à 0 réplique"
+        description: "Le déploiement telecom-ia-deployment demande 0 pod : plus aucune analyse. Vérifier qui a modifié l'échelle."
+    - alert: IaUnavailable
+      expr: kube_deployment_status_replicas_available{namespace="ia",deployment="telecom-ia-deployment"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Aucun pod d'IA disponible"
+        description: "Aucun pod de telecom-ia-deployment n'est disponible depuis plus d'une minute."
+    - alert: BrokerUnavailable
+      expr: kube_statefulset_status_replicas_ready{namespace="ingestion",statefulset="telecom-broker-rabbitmq"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "RabbitMQ indisponible"
+        description: "Aucun pod RabbitMQ prêt depuis plus d'une minute : le flux télécom s'accumule dans le tampon du générateur."
+    - alert: IaMetricsMissing
+      expr: absent(up{namespace="ia"})
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Aucune métrique de l'IA collectée"
+        description: "Prometheus ne voit plus la cible de l'IA (pod absent, PodMonitor supprimé ou flux réseau bloqué)."
+  - name: cloudia.capacity
+    rules:
+    # Q13 : la base de Prometheus approche la limite de taille de la rétention.
+    - alert: PrometheusStorageNearRetentionLimit
+      expr: prometheus_tsdb_storage_blocks_bytes / prometheus_tsdb_retention_limit_bytes > 0.9
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "La base de Prometheus atteint 90 % de la limite de rétention"
+        description: "Les plus anciens blocs vont être purgés ; si cela se répète, réduire la durée de rétention ou agrandir le volume."
+    # node-exporter : disque d'un nœud presque plein (les nœuds Kind sont des conteneurs Docker)
+    - alert: NodeDiskAlmostFull
+      expr: node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.10
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Moins de 10 % d'espace libre sur un nœud"
+        description: "Le disque de {{ $labels.instance }} est presque plein."

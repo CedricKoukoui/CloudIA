@@ -1,0 +1,33 @@
+# Simulation du scénario de Q14 : l'« autre équipe » du cluster mutualisé.
+# Le pod « attacker » représente un conteneur compromis qui possède le jeton du compte par défaut de
+# son namespace. Il tente de lister les secrets du projet, de mettre l'IA à 0 réplique, et de lire les
+# identifiants RabbitMQ. À appliquer seulement pour la démonstration (v5-checks.sh), puis à supprimer :
+#   kubectl delete -f 07-tenant-simulation.yaml
+#
+# Ce pod a VOLONTAIREMENT son jeton monté (comportement par défaut de Kubernetes) : c'est ce qui
+# rend l'attaque réaliste. Le RBAC doit répondre « Forbidden ».
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-ops
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: attacker
+  namespace: tenant-ops
+  labels:
+    app: attacker
+spec:
+  containers:
+  - name: shell
+    image: curlimages/curl:8.10.1
+    command: ["sleep", "3600"]
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi

@@ -19,20 +19,58 @@ spec:
       labels:
         app: telecom-ia
     spec:
+      # v5 (Q14) : compte de service dédié, sans jeton d'accès à l'API Kubernetes.
+      # L'IA n'appelle jamais l'API : un pod compromis n'a donc aucun jeton à voler.
+      serviceAccountName: telecom-ia
+      automountServiceAccountToken: false
       nodeSelector:
         workload: compute # 👈 Pilier C : l'IA ne tourne que sur le worker "compute"
+      securityContext: # v5 : le processus ne tourne plus en root
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001 # rend les certificats (Secret) lisibles par ce groupe
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: ia-analyzer
         image: telecom-ia:latest
         imagePullPolicy: Never # 👈 Image injectée par `kind load docker-image`, jamais téléchargée
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
         ports:
         - containerPort: 8000
           name: metrics
         env:
         - name: PYTHONUNBUFFERED # 👈 Force les logs en temps réel
           value: "1"
+        # v5 (Q14) : identifiants lus dans un Secret (créé par v5-secrets.sh), plus en clair ici.
+        # $(VAR) est remplacé par Kubernetes : ces deux variables doivent être déclarées avant l'URL.
+        - name: RABBITMQ_USER
+          valueFrom:
+            secretKeyRef:
+              name: rabbitmq-credentials
+              key: username
+        - name: RABBITMQ_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: rabbitmq-credentials
+              key: password
+        # v5 (Q3) : AMQP chiffré (amqps, port 5671), certificat du broker vérifié, certificat client présenté.
         - name: RABBITMQ_URL
-          value: "amqp://user:password@telecom-broker-rabbitmq.ingestion.svc.cluster.local:5672/%2F"
+          value: "amqps://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@telecom-broker-rabbitmq.ingestion.svc.cluster.local:5671/%2F"
+        - name: AMQP_CA_FILE
+          value: /etc/amqp-tls/ca.crt
+        - name: AMQP_CERT_FILE
+          value: /etc/amqp-tls/tls.crt
+        - name: AMQP_KEY_FILE
+          value: /etc/amqp-tls/tls.key
+        volumeMounts:
+        - name: amqp-tls
+          mountPath: /etc/amqp-tls
+          readOnly: true
         resources:
           limits:
             cpu: "500m"
@@ -40,3 +78,8 @@ spec:
           requests:
             cpu: "250m"
             memory: "256Mi"
+      volumes:
+      - name: amqp-tls
+        secret:
+          secretName: ia-tls
+          defaultMode: 0440

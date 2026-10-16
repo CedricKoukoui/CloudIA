@@ -19,19 +19,55 @@ spec:
       labels:
         app: telecom-generator
     spec:
+      # v5 (Q14) : compte de service dédié, sans jeton d'accès à l'API Kubernetes.
+      # Le générateur est le pod « exposé » du scénario Q3 / Q9 : s'il est compromis, il ne doit
+      # disposer d'aucun moyen d'interroger l'API.
+      serviceAccountName: telecom-generator
+      automountServiceAccountToken: false
       nodeSelector:
         workload: ingestion # 👈 Pilier C : le générateur reste sur le worker "ingestion"
+      securityContext: # v5 : le processus ne tourne plus en root
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: generator
         image: telecom-ia:latest
         imagePullPolicy: Never # 👈 Image injectée par `kind load docker-image`, jamais téléchargée
         command: ["python", "generator.py"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
         env:
         - name: PYTHONUNBUFFERED
           value: "1"
+        - name: RABBITMQ_USER
+          valueFrom:
+            secretKeyRef:
+              name: rabbitmq-credentials
+              key: username
+        - name: RABBITMQ_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: rabbitmq-credentials
+              key: password
         - name: RABBITMQ_URL
-          # 👈 DNS complet du Namespace ingestion
-          value: "amqp://user:password@telecom-broker-rabbitmq.ingestion.svc.cluster.local:5672/%2F"
+          # 👈 DNS complet du Namespace ingestion ; v5 : amqps (TLS mutuel) sur le port 5671
+          value: "amqps://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@telecom-broker-rabbitmq.ingestion.svc.cluster.local:5671/%2F"
+        - name: AMQP_CA_FILE
+          value: /etc/amqp-tls/ca.crt
+        - name: AMQP_CERT_FILE
+          value: /etc/amqp-tls/tls.crt
+        - name: AMQP_KEY_FILE
+          value: /etc/amqp-tls/tls.key
+        volumeMounts:
+        - name: amqp-tls
+          mountPath: /etc/amqp-tls
+          readOnly: true
         resources: # 👈 Obligatoire pour passer le ResourceQuota du namespace
           limits:
             cpu: "200m"
@@ -39,3 +75,8 @@ spec:
           requests:
             cpu: "100m"
             memory: "128Mi"
+      volumes:
+      - name: amqp-tls
+        secret:
+          secretName: generator-tls
+          defaultMode: 0440

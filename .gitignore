@@ -1,4 +1,16 @@
-node_modules/
+# Environnement Python local
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Certificats et clés privées : ne JAMAIS les commiter (v5-secrets.sh les crée dans ~/.cloudia-v5-tls, hors du dépôt)
+*.key
+*.pem
+*.p12
+tls*/node_modules/
 __pycache__/
 .DS_Store
 .venv/

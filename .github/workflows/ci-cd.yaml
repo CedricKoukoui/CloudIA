@@ -1,15 +1,16 @@
 name: Telecom IA Cloud-Native CI/CD
 
-# À chaque push (et pull request) sur main, v3 ou v4 :
-#   CI : Linting          -> syntaxe Python, fichiers de configuration, manifestes Kubernetes
+# À chaque push (et pull request) sur main, v3, v4 ou v5 :
+#   CI : Linting          -> syntaxe Python, test du TLS mutuel, fichiers de configuration, manifestes Kubernetes,
+#                            règles de sécurité de la v5 (RBAC, réseau, secrets), scripts shell
 #   CI : Test E2E         -> docker-compose.test.yml : générateur -> RabbitMQ -> IA -> Prometheus -> Grafana,
 #                            puis panne du broker et vérification de la reprise
 #   CD : Image du cluster -> construction, contrôle et publication de l'image (push uniquement)
 on:
   push:
-    branches: [ "main", "v3", "v4" ]
+    branches: [ "main", "v3", "v4", "v5" ]
   pull_request:
-    branches: [ "main", "v3", "v4" ]
+    branches: [ "main", "v3", "v4", "v5" ]
 
 permissions:
   contents: read
@@ -34,7 +35,7 @@ jobs:
     - name: Install linters
       run: |
         python -m pip install --upgrade pip
-        pip install flake8 pyyaml
+        pip install flake8 pyyaml pika
 
     # Erreurs de syntaxe Python et noms indéfinis
     - name: Lint Python code (flake8)
@@ -87,6 +88,18 @@ jobs:
         print("nodeSelector : workers « ingestion »")
         PY
 
+    # v5 (Q3) : logique TLS mutuelle du client AMQP, testée avec de vrais certificats (sans RabbitMQ)
+    - name: Test AMQP TLS client (mutual TLS)
+      run: python test_amqp_tls.py
+
+    # v5 (Q3, Q9, Q14) : les règles de sécurité des manifestes (RBAC, réseau, secrets, durcissement des pods)
+    - name: Check security rules (RBAC, network, secrets)
+      run: python check_security.py
+
+    # Les scripts d'exploitation de la v5 (shellcheck est préinstallé sur ubuntu-latest)
+    - name: Lint shell scripts
+      run: shellcheck -S warning -e SC2034 v5-*.sh
+
     - name: Validate docker-compose.test.yml
       run: docker compose -f docker-compose.test.yml config -q
 
@@ -95,7 +108,7 @@ jobs:
         curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
         sudo mv kubeconform /usr/local/bin/
 
-    # Validation réelle des manifestes : schémas officiels + CRD (PodMonitor), mode strict.
+    # Validation réelle des manifestes : schémas officiels + CRD (PodMonitor, PrometheusRule), mode strict.
     # -strict refuse les champs inconnus (ex. "environment:" au lieu de "env:").
     - name: Validate Kubernetes manifests (schemas, strict)
       run: |
@@ -105,6 +118,10 @@ jobs:
           01-namespaces-quotas.yaml \
           02-network-policy.yaml \
           03-observability-quota.yaml \
+          04-network-policy-observability.yaml \
+          05-rbac.yaml \
+          06-alert-rules.yaml \
+          07-tenant-simulation.yaml \
           rabbitmq-v3-persistant.yaml \
           deployment.yaml \
           generator-deployment.yaml \

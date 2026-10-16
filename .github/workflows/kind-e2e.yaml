@@ -1,18 +1,34 @@
 name: Kind E2E (manuel)
 
-# Test de résilience sur un vrai cluster Kind à 3 nœuds : labels, nodeSelector, ResourceQuotas,
-# NetworkPolicy, panne du broker. Plus lourd que la sonde Compose (≈ 10 min) : il ne tourne pas
-# à chaque push, mais à la demande (GitHub > Actions > "Kind E2E (manuel)" > Run workflow).
+# Test de bout en bout sur un vrai cluster Kind à 3 nœuds (v5) : labels, nodeSelector, ResourceQuotas,
+# NetworkPolicy (entrée ET sortie), RBAC, TLS mutuel, secrets, panne du broker. Plus lourd que la sonde
+# Compose (≈ 10 min) : il ne tourne pas à chaque push, mais à la demande
+# (GitHub > Actions > "Kind E2E (manuel)" > Run workflow).
+#
+# Choix du CNI (réseau du cluster) :
+#   calico  : applique les NetworkPolicy en entrée et en sortie (défaut ; config kind-config-calico.yaml)
+#   kindnet : CNI par défaut de Kind (config kind-config.yaml) ; le filtrage sortant n'y est pas garanti
 on:
   workflow_dispatch:
+    inputs:
+      cni:
+        description: "CNI du cluster Kind"
+        type: choice
+        options: [calico, kindnet]
+        default: calico
 
 permissions:
   contents: read
 
+env:
+  CNI: ${{ inputs.cni }}
+  CLUSTER: ${{ inputs.cni == 'calico' && 'cloudia-v5' || 'cloudia-v3' }}
+  KIND_CONFIG: ${{ inputs.cni == 'calico' && 'kind-config-calico.yaml' || 'kind-config.yaml' }}
+
 jobs:
   e2e-resilience:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
     - name: Checkout code
@@ -27,16 +43,29 @@ jobs:
     - name: Install test dependencies
       run: pip install requests
 
-    - name: Create Kind cluster (3 nodes, labels from kind-config.yaml)
+    # Avec Calico, les nœuds ne sont prêts qu'après l'installation du CNI : on n'attend donc pas ici
+    - name: Create Kind cluster (3 nodes, labels from the kind config)
       uses: helm/kind-action@v1.10.0
       with:
-        config: kind-config.yaml
-        cluster_name: cloudia-v3
+        config: ${{ env.KIND_CONFIG }}
+        cluster_name: ${{ env.CLUSTER }}
+        wait: ${{ inputs.cni == 'calico' && '0s' || '60s' }}
+
+    - name: Install Calico
+      if: inputs.cni == 'calico'
+      run: |
+        kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.2/manifests/calico.yaml
+        kubectl -n kube-system rollout status daemonset/calico-node --timeout=300s
+        kubectl wait --for=condition=Ready nodes --all --timeout=300s
+
+    # Le filtrage sortant doit être appliqué par le CNI choisi (sinon la suite n'aurait pas de sens)
+    - name: Check that the CNI enforces egress policies
+      run: ./v5-test-egress.sh
 
     - name: Build and load image into Kind
       run: |
         docker build -t telecom-ia:latest .
-        kind load docker-image telecom-ia:latest --name cloudia-v3
+        kind load docker-image telecom-ia:latest --name "$CLUSTER"
 
     # Seules les CRD sont installées (pas l'opérateur) : suffisant pour accepter le PodMonitor
     - name: Install Prometheus Operator CRDs
@@ -45,13 +74,17 @@ jobs:
         helm repo update
         helm install prometheus-operator-crds prometheus-community/prometheus-operator-crds
 
-    - name: Deploy namespaces, quotas and broker
+    # v5 : certificats et Secrets (créés par le script, jamais commités), comptes de service, puis le broker
+    - name: Deploy namespaces, secrets, RBAC and broker
       run: |
         kubectl apply -f 01-namespaces-quotas.yaml
+        kubectl label namespace ia ingestion pod-security.kubernetes.io/enforce=restricted --overwrite
+        ./v5-secrets.sh
+        kubectl apply -f 05-rbac.yaml
         kubectl apply -f rabbitmq-v3-persistant.yaml
         kubectl rollout status statefulset/telecom-broker-rabbitmq -n ingestion --timeout=240s
 
-    - name: Deploy IA, generator, observability and network policies
+    - name: Deploy IA, generator, observability link and network policies
       run: |
         kubectl apply -f deployment.yaml -f generator-deployment.yaml -f prometheus-link.yaml
         kubectl apply -f 02-network-policy.yaml
@@ -71,6 +104,12 @@ jobs:
         check ia app=telecom-ia compute
         check ingestion app=rabbitmq ingestion
         check ingestion app=telecom-generator ingestion
+
+    # v5 : secrets, TLS mutuel, isolation réseau (entrée et sortie), RBAC, attaque simulée (Q3, Q9, Q14)
+    - name: Security checks (v5-checks.sh)
+      run: |
+        kubectl apply -f 07-tenant-simulation.yaml
+        CI_MODE=1 ./v5-checks.sh
 
     # Supprime le broker et vérifie que le flux reprend ET que l'IA n'a pas redémarré
     - name: Crash-test de résilience (suppression du broker)

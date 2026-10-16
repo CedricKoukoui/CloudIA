@@ -1,0 +1,78 @@
+# Isolation réseau du namespace « default » (observabilité), v5 : Q3 / Q9 « saturer ou falsifier Prometheus ».
+#
+# Jusqu'à la v4, ce namespace n'avait AUCUNE NetworkPolicy : n'importe quel pod du cluster pouvait
+# joindre Prometheus, Grafana ou Alertmanager. Ici : refus par défaut de l'entrée, puis ouverture
+# des seuls flux nécessaires. Seul l'ENTRANT est filtré (la pile télécharge, résout, appelle l'API).
+#
+# AVANT d'appliquer : vérifier que les labels ci-dessous existent (v5-checks.sh preflight).
+# Si un pod de la pile ne devient plus Ready après l'application : kubectl delete -f 04-network-policy-observability.yaml
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+---
+# Prometheus doit pouvoir collecter toutes les cibles de la pile (kube-state-metrics, Alertmanager,
+# Grafana, opérateur, ses propres conteneurs auxiliaires). Le node-exporter est en réseau hôte :
+# il n'est pas concerné par les NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+---
+# Grafana lit Prometheus (9090) et Alertmanager (9093)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-grafana-to-datasources
+  namespace: default
+spec:
+  podSelector:
+    matchExpressions:
+    - key: app.kubernetes.io/name
+      operator: In
+      values: ["prometheus", "alertmanager"]
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: grafana
+    ports:
+    - protocol: TCP
+      port: 9090
+    - protocol: TCP
+      port: 9093
+---
+# Le serveur d'API Kubernetes appelle l'opérateur (port 10250) pour valider les règles d'alerte
+# (webhook d'admission). Le trafic vient d'un nœud du cluster : source non sélectionnable par label.
+# L'accès est protégé par TLS ; aucun autre service n'écoute sur ce port dans ce namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-admission-webhook
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - ports:
+    - protocol: TCP
+      port: 10250

@@ -1,0 +1,199 @@
+# RBAC (v5, Q14) : moindre privilège, uniquement des droits LIMITÉS À UN NAMESPACE.
+#
+# Principes appliqués :
+#  1. un ServiceAccount par application, SANS jeton monté dans le pod (automountServiceAccountToken: false) ;
+#     aucune application du projet n'appelle l'API Kubernetes ;
+#  2. AUCUN ClusterRole ni ClusterRoleBinding : aucun droit à l'échelle du cluster ;
+#  3. AUCUN droit sur les « secrets » dans aucun rôle (même pour l'exploitant) ;
+#  4. deux profils humains, rattachés à des groupes : lecteurs (lecture seule) et exploitants
+#     (lecture + mise à l'échelle + redémarrage), chacun limité aux namespaces du projet.
+#
+# Le compte « default » de chaque namespace n'a aucun droit : un pod d'une autre équipe qui l'utilise
+# (scénario Q14) reçoit « Forbidden » sur tout le projet.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: telecom-ia
+  namespace: ia
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: telecom-generator
+  namespace: ingestion
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rabbitmq
+  namespace: ingestion
+automountServiceAccountToken: false
+---
+# ---------- Namespace ia ----------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cloudia-viewer
+  namespace: ia
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "services", "endpoints", "events", "resourcequotas", "limitranges"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cloudia-operator
+  namespace: ia
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "services", "endpoints", "events", "resourcequotas", "limitranges"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+# Mise à l'échelle et redémarrage : réservés aux exploitants
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["patch", "update"]
+- apiGroups: ["apps"]
+  resources: ["deployments/scale", "statefulsets/scale"]
+  verbs: ["get", "update", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["delete"]
+- apiGroups: [""]
+  resources: ["pods/portforward"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cloudia-viewers
+  namespace: ia
+subjects:
+- kind: Group
+  name: cloudia:viewers
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: cloudia-viewer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cloudia-operators
+  namespace: ia
+subjects:
+- kind: Group
+  name: cloudia:operators
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: cloudia-operator
+  apiGroup: rbac.authorization.k8s.io
+---
+# ---------- Namespace ingestion ----------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cloudia-viewer
+  namespace: ingestion
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "services", "endpoints", "events", "resourcequotas", "limitranges", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cloudia-operator
+  namespace: ingestion
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "services", "endpoints", "events", "resourcequotas", "limitranges", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["patch", "update"]
+- apiGroups: ["apps"]
+  resources: ["deployments/scale", "statefulsets/scale"]
+  verbs: ["get", "update", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["delete"]
+- apiGroups: [""]
+  resources: ["pods/portforward"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cloudia-viewers
+  namespace: ingestion
+subjects:
+- kind: Group
+  name: cloudia:viewers
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: cloudia-viewer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cloudia-operators
+  namespace: ingestion
+subjects:
+- kind: Group
+  name: cloudia:operators
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: cloudia-operator
+  apiGroup: rbac.authorization.k8s.io
+---
+# ---------- Namespace default (observabilité) : lecture seule pour les deux profils ----------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cloudia-observability-viewer
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "services", "endpoints", "events", "resourcequotas", "limitranges"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cloudia-observability-viewers
+  namespace: default
+subjects:
+- kind: Group
+  name: cloudia:viewers
+  apiGroup: rbac.authorization.k8s.io
+- kind: Group
+  name: cloudia:operators
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: cloudia-observability-viewer
+  apiGroup: rbac.authorization.k8s.io

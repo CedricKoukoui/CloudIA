@@ -1,4 +1,4 @@
-# Valeurs Helm de la stack d'observabilité (kube-prometheus-stack), version v4.
+# Valeurs Helm de la stack d'observabilité (kube-prometheus-stack), version v5 (v4 + mot de passe Grafana en Secret).
 # Elles reprennent pour Prometheus et Grafana les trois piliers de la v3 :
 #   A : requests / limits sur CHAQUE conteneur de la stack (cgroups)
 #   B : quota du namespace « default » (03-observability-quota.yaml) et volume dédié à Prometheus
@@ -35,7 +35,12 @@ prometheus:
               storage: 2Gi
 
 grafana:
-  adminPassword: admin      # prototype uniquement (conserve le mot de passe de la v3 lors de l'upgrade)
+  # v5 (Q14) : le mot de passe n'est plus dans ce fichier. Il est lu dans le Secret « grafana-admin »
+  # créé par v5-secrets.sh (qui doit donc être lancé AVANT le helm upgrade).
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
   nodeSelector:
     workload: ingestion
   resources:

@@ -7,6 +7,8 @@ from collections import deque
 
 import pika
 
+from amqp_tls import build_params
+
 AMQP_URL = os.environ.get('RABBITMQ_URL', 'amqp://user:password@localhost:5672/%2F')
 QUEUE = 'telecom_traffic'
 # Débit de production en messages par seconde (1 par défaut)
@@ -18,10 +20,10 @@ BUFFER_MAX = int(os.environ.get('BUFFER_MAX', '5000'))
 RESET_QUEUE = os.environ.get('RESET_QUEUE') == '1'
 TICK = 0.2  # pas de la boucle principale, en secondes
 
-params = pika.URLParameters(AMQP_URL)
+params = build_params(AMQP_URL)  # v5 : amqps:// + certificat client si AMQP_CA_FILE / AMQP_CERT_FILE / AMQP_KEY_FILE
 params.socket_timeout = 3  # une tentative de connexion ne doit pas bloquer la boucle d'envoi
 
-print(f"🚀 Simulateur d'équipement réseau (v3 - reconnexion + tampon local) : {RATE} msg/s, tampon {BUFFER_MAX}...")
+print(f"🚀 Simulateur d'équipement réseau (v5 - reconnexion + tampon local + TLS) : {RATE} msg/s, tampon {BUFFER_MAX}...")
 
 
 def try_connect(reset=False):

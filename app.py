@@ -5,6 +5,8 @@ import numpy as np
 import pika  # Comme client de RabbitMQ
 from sklearn.ensemble import IsolationForest
 
+from amqp_tls import build_params
+
 # Import de la bibliothèque de métriques Cloud Native
 from prometheus_client import start_http_server, Counter
 
@@ -24,7 +26,7 @@ data_normal = np.random.normal(loc=[100, 1, 20], scale=[10, 0.5, 2], size=(500, 
 # Entraînement de l'Isolation Forest
 clf = IsolationForest(contamination=0.05, random_state=42)
 clf.fit(data_normal)
-print("✅ Modèle entraîné et prêt à analyser le flux réseau (Version v3 - ACK + reconnexion).")
+print("✅ Modèle entraîné et prêt à analyser le flux réseau (Version v5 - ACK + reconnexion + TLS).")
 
 # Démarrage du serveur de métriques Prometheus sur le port 8000
 start_http_server(8000)
@@ -32,7 +34,7 @@ print("📊 Serveur de métriques Prometheus démarré sur le port 8000")
 
 # ---------------
 AMQP_URL = os.environ.get('RABBITMQ_URL', 'amqp://user:password@localhost:5672/%2F')
-params = pika.URLParameters(AMQP_URL)
+params = build_params(AMQP_URL)  # v5 : amqps:// + certificat client si AMQP_CA_FILE / AMQP_CERT_FILE / AMQP_KEY_FILE
 
 
 def connect_with_retry(delay=3):

@@ -1,23 +1,59 @@
-# Isolation réseau de la v3 : tout le trafic entrant est refusé par défaut dans les deux
-# namespaces, puis on ouvre uniquement les flux nécessaires.
-# NB : les NetworkPolicy ne filtrent que le trafic ENTRANT ici (policyTypes: Ingress).
+# Isolation réseau (v5) : Zero Trust pour les namespaces « ingestion » et « ia » (Q3 et Q9).
+#
+# Par rapport à la v3 :
+#   - le trafic SORTANT (Egress) est aussi refusé par défaut : un pod compromis ne peut plus
+#     scanner le cluster ni joindre l'API Kubernetes ;
+#   - les sources autorisées sont des PODS précis (labels), plus des namespaces entiers ;
+#   - le broker n'accepte que l'AMQP chiffré (port 5671), plus le port 5672 en clair.
+#
+# Résultat, par pod :
+#   générateur : sort uniquement vers RabbitMQ:5671 (et vers le DNS)
+#   IA         : sort uniquement vers RabbitMQ:5671 (et vers le DNS) ; n'accepte que Prometheus sur :8000
+#   RabbitMQ   : n'accepte que le générateur et l'IA sur :5671 ; ne sort que vers le DNS
+#
+# Ces règles ne sont appliquées que si le CNI les applique : voir v5-test-egress.sh.
 ---
-# 1. Namespace ingestion : refus par défaut de tout trafic entrant
+# 1. ingestion : refus par défaut, entrée ET sortie
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: default-deny-ingress
+  name: default-deny-all
   namespace: ingestion
 spec:
   podSelector: {}
   policyTypes:
   - Ingress
+  - Egress
 ---
-# 2. RabbitMQ : AMQP (5672) uniquement depuis le générateur (même namespace) et l'IA (namespace ia)
+# 2. ingestion : résolution DNS (sinon plus aucun nom de service ne se résout)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-amqp-to-rabbitmq
+  name: allow-dns-egress
+  namespace: ingestion
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+---
+# 3. RabbitMQ : AMQP chiffré (5671) uniquement depuis le pod générateur (même namespace) et le pod IA
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-amqps-to-rabbitmq
   namespace: ingestion
 spec:
   podSelector:
@@ -27,30 +63,103 @@ spec:
   - Ingress
   ingress:
   - from:
-    - namespaceSelector:
+    - podSelector:
         matchLabels:
-          kubernetes.io/metadata.name: ingestion
+          app: telecom-generator
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: ia
+      podSelector:
+        matchLabels:
+          app: telecom-ia
     ports:
     - protocol: TCP
-      port: 5672
+      port: 5671
 ---
-# 3. Namespace ia : refus par défaut de tout trafic entrant
+# 4. Générateur : la SEULE sortie autorisée est RabbitMQ:5671 (règle 1 de Q3)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: default-deny-ingress
+  name: generator-egress-to-rabbitmq
+  namespace: ingestion
+spec:
+  podSelector:
+    matchLabels:
+      app: telecom-generator
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: rabbitmq
+    ports:
+    - protocol: TCP
+      port: 5671
+---
+# 5. ia : refus par défaut, entrée ET sortie
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
   namespace: ia
 spec:
   podSelector: {}
   policyTypes:
   - Ingress
+  - Egress
 ---
-# 4. IA : métriques (8000) uniquement depuis Prometheus.
-# La stack kube-prometheus-stack est installée dans le namespace "default" sur ce cluster :
-# si tu la déplaces (ex. namespace "monitoring"), change la valeur ci-dessous.
+# 6. ia : résolution DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: ia
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+---
+# 7. IA : la seule sortie autorisée est RabbitMQ:5671
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ia-egress-to-rabbitmq
+  namespace: ia
+spec:
+  podSelector:
+    matchLabels:
+      app: telecom-ia
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingestion
+      podSelector:
+        matchLabels:
+          app: rabbitmq
+    ports:
+    - protocol: TCP
+      port: 5671
+---
+# 8. IA : métriques (8000) uniquement depuis le POD Prometheus (règle 2 de Q3, Q9 : « seulement Prometheus »).
+# Les deux sélecteurs sont dans le même élément « from » : il faut être à la fois dans le namespace
+# « default » ET porter le label du pod Prometheus. La stack est installée dans « default » sur ce cluster.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -67,6 +176,9 @@ spec:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: default
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
     ports:
     - protocol: TCP
       port: 8000
