@@ -10,6 +10,15 @@
 #
 # Le compte « default » de chaque namespace n'a aucun droit : un pod d'une autre équipe qui l'utilise
 # (scénario Q14) reçoit « Forbidden » sur tout le projet.
+#
+# v6 (passage à l'échelle) :
+#  - deux comptes de service de plus, dans « mlops » : le registre MLflow et le Job d'entraînement,
+#    eux aussi sans jeton (aucun n'appelle l'API Kubernetes) ;
+#  - lecteurs et exploitants voient l'autoscaler de l'IA (HPA et ScaledObject KEDA) en lecture seule ;
+#  - « mlops » : lecture seule pour les deux profils. Lancer un entraînement et promouvoir un modèle
+#    en production reste réservé à l'administrateur du cluster ;
+#  - rien ne change pour la mise à l'échelle manuelle des exploitants, mais elle est désormais
+#    écrasée par l'autoscaler au cycle suivant (10 s) : la bonne action est de modifier le ScaledObject.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -32,6 +41,21 @@ metadata:
   namespace: ingestion
 automountServiceAccountToken: false
 ---
+# v6 : registre de modèles et entraînement centralisé
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mlflow
+  namespace: mlops
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: model-trainer
+  namespace: mlops
+automountServiceAccountToken: false
+---
 # ---------- Namespace ia ----------
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -45,6 +69,12 @@ rules:
 - apiGroups: ["apps"]
   resources: ["deployments", "replicasets", "statefulsets"]
   verbs: ["get", "list", "watch"]
+- apiGroups: ["autoscaling"]       # v6 : HPA créé par KEDA
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["keda.sh"]           # v6 : règle de passage à l'échelle (10-autoscaling.yaml)
+  resources: ["scaledobjects"]
+  verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -57,6 +87,12 @@ rules:
   verbs: ["get", "list", "watch"]
 - apiGroups: ["apps"]
   resources: ["deployments", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["autoscaling"]       # v6 : HPA créé par KEDA
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["keda.sh"]           # v6 : règle de passage à l'échelle (10-autoscaling.yaml)
+  resources: ["scaledobjects"]
   verbs: ["get", "list", "watch"]
 # Mise à l'échelle et redémarrage : réservés aux exploitants
 - apiGroups: ["apps"]
@@ -196,4 +232,38 @@ subjects:
 roleRef:
   kind: Role
   name: cloudia-observability-viewer
+  apiGroup: rbac.authorization.k8s.io
+---
+# ---------- Namespace mlops (v6) : lecture seule pour les deux profils ----------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cloudia-mlops-viewer
+  namespace: mlops
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "services", "endpoints", "events", "resourcequotas", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cloudia-mlops-viewers
+  namespace: mlops
+subjects:
+- kind: Group
+  name: cloudia:viewers
+  apiGroup: rbac.authorization.k8s.io
+- kind: Group
+  name: cloudia:operators
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: cloudia-mlops-viewer
   apiGroup: rbac.authorization.k8s.io

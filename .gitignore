@@ -10,8 +10,11 @@ __pycache__/
 *.key
 *.pem
 *.p12
-tls*/node_modules/
-__pycache__/
-.DS_Store
-.venv/
-__pycache__/
+tls*/
+
+# Données locales de MLflow (essais hors cluster, v6)
+mlruns/
+mlartifacts/
+mlflow.db
+
+node_modules/

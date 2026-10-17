@@ -72,6 +72,11 @@ spec:
           name: amqps
         - containerPort: 15672
           name: management
+        # v6 : métriques Prometheus du broker (plugin rabbitmq_prometheus, activé par défaut dans l'image
+        # officielle). Elles donnent la longueur de la file, sur laquelle l'autoscaler de l'IA s'appuie.
+        # HTTP en clair dans le cluster, ouvert au seul pod Prometheus (02-network-policy.yaml).
+        - containerPort: 15692
+          name: prometheus
         env:
         # v5 (Q14) : identifiants lus dans le Secret « rabbitmq-credentials » (créé par v5-secrets.sh).
         # Attention : RabbitMQ ne lit ces variables qu'à la CRÉATION du compte (premier démarrage

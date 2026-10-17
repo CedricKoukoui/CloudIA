@@ -214,8 +214,9 @@ if kubectl get pod -n tenant-ops attacker >/dev/null 2>&1; then
   expect_code 403 "lister les secrets de ingestion (identifiants RabbitMQ) refusé" GET /api/v1/namespaces/ingestion/secrets
   expect_code 403 "lister les secrets de tout le cluster refusé"             GET /api/v1/secrets
   expect_code 403 "mettre l'IA à 0 réplique refusé"                          PATCH /apis/apps/v1/namespaces/ia/deployments/telecom-ia-deployment/scale '{"spec":{"replicas":0}}'
+  # v6 : l'autoscaler peut avoir ajouté des pods ; ce qui compte est que l'attaque n'ait rien mis à 0
   r=$(kubectl get deployment -n ia telecom-ia-deployment -o 'jsonpath={.spec.replicas}' 2>/dev/null)
-  if [ "$r" = "1" ]; then ok "l'IA a toujours 1 réplique"; else ko "l'IA a $r réplique(s) !"; fi
+  if [ "${r:-0}" -ge 1 ]; then ok "l'IA a toujours $r réplique(s) (au moins 1)"; else ko "l'IA a ${r:-0} réplique !"; fi
   c=$(kubectl exec -n tenant-ops attacker -- sh -c "curl -s -m 5 --connect-timeout 4 -o /dev/null -k https://$RMQ:5671; echo \$?" 2>/dev/null | tail -1)
   case "$c" in 6|7|28) ok "pod d'une autre équipe → RabbitMQ:5671 bloqué par le réseau (curl code $c)";; *) ko "pod d'une autre équipe → RabbitMQ:5671 : la connexion s'établit (curl code ${c:-?})";; esac
 else
@@ -229,7 +230,10 @@ if [ -n "$PROM" ]; then
   for name in IaScaledToZero IaUnavailable BrokerUnavailable IaMetricsMissing PrometheusStorageNearRetentionLimit NodeDiskAlmostFull; do
     if echo "$rules" | grep -q "\"$name\""; then ok "règle $name chargée"; else ko "règle $name absente (06-alert-rules.yaml appliqué ?)"; fi
   done
-  if [ "${SCALE_TEST:-0}" = "1" ]; then
+  if [ "${SCALE_TEST:-0}" = "1" ] && kubectl get scaledobject -n ia telecom-ia-scaler >/dev/null 2>&1; then
+    echo "  (v6 : l'autoscaler remet l'IA à 1 réplique en ~10 s, avant que l'alerte (for: 30s) ne se lève ;"
+    echo "   ce test est remplacé par SELFHEAL_TEST=1 ./v6-checks.sh)"
+  elif [ "${SCALE_TEST:-0}" = "1" ]; then
     echo "  Test Q14 : mise de l'IA à 0 réplique (en administrateur), attente de l'alerte (jusqu'à 3 min)..."
     kubectl scale deployment/telecom-ia-deployment -n ia --replicas=0 >/dev/null
     fired=no

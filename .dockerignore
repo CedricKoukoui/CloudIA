@@ -1,0 +1,21 @@
+# Ce qui ne doit jamais entrer dans l'image (COPY . . du Dockerfile)
+.git/
+.github/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+# Certificats et clés privées (v5) : jamais dans une image
+*.key
+*.pem
+*.p12
+*.crt
+tls*/
+# Données locales de MLflow (essais hors cluster)
+mlruns/
+mlartifacts/
+mlflow.db
+# Documentation et schémas : inutiles à l'exécution
+*.md
+*.png
+*.drawio.html

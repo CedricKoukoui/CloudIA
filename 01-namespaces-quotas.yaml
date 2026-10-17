@@ -1,11 +1,24 @@
+# Namespaces et quotas (piliers A et B de la v3), mis à jour en v6 pour le passage à l'échelle.
+#
+# v6 :
+#   - le quota de « ia » ne permettait qu'UN pod (il était égal aux requests du pod unique). Il est
+#     dimensionné pour 5 pods (maximum de l'autoscaler, 10-autoscaling.yaml) + 1 pod de surplus pendant
+#     une mise à jour progressive. Le quota reste le plafond dur : même un autoscaler mal réglé ne peut
+#     pas dépasser 6 pods ni affamer les autres namespaces ;
+#   - nouveau namespace « mlops » : registre de modèles MLflow et Job d'entraînement centralisé ;
+#   - le niveau Pod Security « restricted » (v5, posé jusqu'ici par kubectl label) est déclaré ici.
 ---
-# 1. Namespace pour l'ingestion (RabbitMQ)
+# 1. Namespace pour l'ingestion (RabbitMQ, générateur)
 apiVersion: v1
 kind: Namespace
 metadata:
   name: ingestion
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
 ---
 # Quotas pour le Namespace Ingestion (Sanctuarisation)
+# Somme des conteneurs : requests 350m / 384Mi ; limits 900m / 768Mi (générateur porté à 400m en v6
+# pour tenir le débit de crise de 100 messages/s).
 apiVersion: v1
 kind: ResourceQuota
 metadata:
@@ -17,15 +30,17 @@ spec:
     requests.memory: "512Mi"
     limits.cpu: "1"
     limits.memory: "1Gi"
-
 ---
 # 2. Namespace pour l'IA
 apiVersion: v1
 kind: Namespace
 metadata:
   name: ia
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
 ---
-# Quotas pour le Namespace IA (Plafond pour éviter la Resource Contention)
+# Quotas pour le Namespace IA (v6) : 6 pods au plus = 5 (maxReplicaCount) + 1 (maxSurge du rolling update).
+# Par pod (deployment.yaml) : requests 100m / 256Mi, limits 250m / 512Mi.
 apiVersion: v1
 kind: ResourceQuota
 metadata:
@@ -33,8 +48,30 @@ metadata:
   namespace: ia
 spec:
   hard:
-    requests.cpu: "250m"
-    requests.memory: "256Mi"
-    limits.cpu: "500m"
-    limits.memory: "512Mi"
-
+    pods: "6"
+    requests.cpu: "600m"
+    requests.memory: "1536Mi"
+    limits.cpu: "1500m"
+    limits.memory: "3Gi"
+---
+# 3. Namespace du registre de modèles (v6)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mlops
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+# Quota « mlops » : serveur MLflow (requests 100m / 512Mi, limits 500m / 768Mi)
+# + un Job d'entraînement à la fois (requests 200m / 256Mi, limits 500m / 512Mi).
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: mlops-quota
+  namespace: mlops
+spec:
+  hard:
+    requests.cpu: "400m"
+    requests.memory: "1Gi"
+    limits.cpu: "1500m"
+    limits.memory: "1536Mi"

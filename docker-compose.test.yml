@@ -16,7 +16,13 @@
 # Ce qu'il NE teste PAS (réservé au job "e2e-resilience" de la CI et au cluster Kind) :
 # ResourceQuotas, nodeSelector, PVC, vraies NetworkPolicy, throttling CPU mesuré par cAdvisor.
 #
+# v6 : le modèle n'est plus entraîné par l'IA. Un registre MLflow et un entraînement centralisé
+# (service « trainer », lancé une fois) fournissent le modèle validé que l'IA télécharge au démarrage.
+# Réseau "mlops" : mlflow, trainer, ia-analyzer (le générateur n'y a pas accès, comme sur le cluster).
+#
 # Usage (depuis la racine du dépôt, avec le venv actif) :
+#   docker compose -f docker-compose.test.yml up -d --build --wait mlflow rabbitmq
+#   docker compose -f docker-compose.test.yml run --rm --build trainer          # entraîne, valide, promeut
 #   docker compose -f docker-compose.test.yml up -d --build --wait
 #   TEST_MODE=compose python3 test_observability.py
 #   docker compose -f docker-compose.test.yml down -v
@@ -25,9 +31,9 @@
 # le conteneur RabbitMQ, ce qui demande la CLI docker.
 #
 # Ports publiés sur l'hôte : 8000 (métriques de l'IA), 9090 (Prometheus), 3000 (Grafana,
-# admin / admin), 15672 (console RabbitMQ, user / password).
+# admin / admin), 15672 (console RabbitMQ, user / password), 5000 (registre MLflow, v6).
 
-name: cloudia-v3-test
+name: cloudia-v6-test
 
 services:
   # 1. Le broker réseau, avec un volume pour que la file durable survive à l'arrêt du conteneur
@@ -50,25 +56,71 @@ services:
       retries: 24
       start_period: 15s
 
-  # 2. La brique IA (construite à partir du Dockerfile)
+  # 1 bis (v6). Le registre de modèles : même image et mêmes options que 08-mlops.yaml
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.17.1
+    command:
+      - mlflow
+      - server
+      - --host=0.0.0.0
+      - --port=5000
+      - --workers=1
+      - --backend-store-uri=sqlite:////mlflow/mlflow.db
+      - --artifacts-destination=/mlflow/artifacts
+      - --allowed-hosts=mlflow,mlflow:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*
+    environment:
+      - MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false
+      - MLFLOW_DISABLE_AGENT_HINT=1
+    volumes:
+      - mlflow_data:/mlflow
+    mem_limit: 768m    # mêmes limites que 08-mlops.yaml
+    ports:
+      - "5000:5000"
+    networks: [mlops]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+
+  # 1 ter (v6). L'entraînement centralisé, lancé une fois : docker compose run --rm trainer
+  # (profil « train » : « up » ne le démarre pas, il n'a rien à faire en continu)
+  trainer:
+    build: .
+    command: python train.py
+    profiles: [train]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    networks: [mlops]
+    depends_on:
+      mlflow:
+        condition: service_healthy
+
+  # 2. La brique IA (construite à partir du Dockerfile) ; v6 : modèle téléchargé depuis le registre
   ia-analyzer:
     build: .
     environment:
       - PYTHONUNBUFFERED=1
       - RABBITMQ_URL=amqp://user:password@rabbitmq:5672/%2F
-    cpus: 0.5          # mêmes limites que deployment.yaml (pilier A)
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    cpus: 0.25         # mêmes limites que deployment.yaml (pilier A ; v6 : des pods plus petits)
     mem_limit: 512m
     ports:
       - "8000:8000"
-    networks: [ingestion, monitoring]
+    networks: [ingestion, monitoring, mlops]
     depends_on:
       rabbitmq:
         condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    # Le serveur de métriques ne démarre qu'une fois le modèle chargé depuis le registre
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/metrics', timeout=2)"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 30
       start_period: 20s
 
   # 3. Le générateur d'antenne télécom (RATE msg/s, tampon local pendant la panne)
@@ -80,7 +132,7 @@ services:
       - RABBITMQ_URL=amqp://user:password@rabbitmq:5672/%2F
       - RATE=${RATE:-1}
       - BUFFER_MAX=${BUFFER_MAX:-5000}
-    cpus: 0.2          # mêmes limites que generator-deployment.yaml
+    cpus: 0.4          # mêmes limites que generator-deployment.yaml (v6 : 400m)
     mem_limit: 256m
     networks: [ingestion]
     depends_on:
@@ -120,7 +172,9 @@ services:
 networks:
   ingestion:
   monitoring:
+  mlops:
 
 # Volume persistant du broker : il survit aux crashs de conteneurs (équivalent du PVC de la v3)
 volumes:
   rabbitmq_persistent_data:
+  mlflow_data:          # v6 : base et fichiers du registre de modèles

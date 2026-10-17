@@ -6,11 +6,18 @@ metadata:
   labels:
     app: telecom-ia
 spec:
-  replicas: 1
-  # Le quota du namespace 'ia' est égal aux requests de l'unique pod : un rolling update
-  # ne pourrait pas créer le pod supplémentaire. Recreate arrête l'ancien pod avant.
+  # v6 : PAS de champ « replicas ». Le nombre de pods appartient à l'autoscaler (KEDA + HPA,
+  # 10-autoscaling.yaml). Avec « replicas: 1 » ici, chaque « kubectl apply » de ce fichier remettrait
+  # l'IA à 1 pod en pleine crise. (Au premier apply depuis la v5, le champ disparaît : l'IA revient à 1
+  # pod, puis l'autoscaler reprend la main.)
+  #
+  # v6 : mise à jour progressive. Le quota de « ia » prévoit 1 pod de surplus (6 = 5 + 1) : le nouveau
+  # pod démarre, charge le modèle, devient Ready, puis seulement un ancien pod s'arrête.
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: telecom-ia
@@ -20,11 +27,12 @@ spec:
         app: telecom-ia
     spec:
       # v5 (Q14) : compte de service dédié, sans jeton d'accès à l'API Kubernetes.
-      # L'IA n'appelle jamais l'API : un pod compromis n'a donc aucun jeton à voler.
       serviceAccountName: telecom-ia
       automountServiceAccountToken: false
       nodeSelector:
         workload: compute # 👈 Pilier C : l'IA ne tourne que sur le worker "compute"
+      # v6 : le temps de finir le message en cours et de fermer la connexion AMQP (SIGTERM -> app.py)
+      terminationGracePeriodSeconds: 30
       securityContext: # v5 : le processus ne tourne plus en root
         runAsNonRoot: true
         runAsUser: 10001
@@ -46,6 +54,19 @@ spec:
         env:
         - name: PYTHONUNBUFFERED # 👈 Force les logs en temps réel
           value: "1"
+        - name: HOME # l'uid 10001 n'a pas de dossier personnel : le client MLflow écrit dans /tmp
+          value: /tmp
+        # v6 : le modèle vient du registre (entraîné une seule fois par 09-train-job.yaml)
+        - name: MLFLOW_TRACKING_URI
+          value: http://mlflow.mlops.svc.cluster.local:5000
+        - name: MODEL_NAME
+          value: telecom-anomaly
+        - name: MODEL_ALIAS
+          value: production
+        # v6 : messages réservés par pod (non acquittés). Petit = répartition plus fine entre les pods
+        # quand l'autoscaler en ajoute ; grand = moins d'allers-retours avec le broker.
+        - name: PREFETCH
+          value: "50"
         # v5 (Q14) : identifiants lus dans un Secret (créé par v5-secrets.sh), plus en clair ici.
         # $(VAR) est remplacé par Kubernetes : ces deux variables doivent être déclarées avant l'URL.
         - name: RABBITMQ_USER
@@ -67,16 +88,26 @@ spec:
           value: /etc/amqp-tls/tls.crt
         - name: AMQP_KEY_FILE
           value: /etc/amqp-tls/tls.key
+        # v6 : Ready = modèle du registre chargé ET consommation de la file en place (fichier écrit par
+        # app.py). Sonde « exec » : elle s'exécute dans le conteneur, les NetworkPolicy ne la gênent pas.
+        readinessProbe:
+          exec:
+            command: ["test", "-f", "/tmp/model-ready"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 3
         volumeMounts:
         - name: amqp-tls
           mountPath: /etc/amqp-tls
           readOnly: true
+        # v6 : des pods plus petits mais plus nombreux. La limite CPU fixe la capacité d'un pod ;
+        # l'autoscaler ajoute des pods quand cette capacité ne suffit plus (v6-load-test.sh la mesure).
         resources:
           limits:
-            cpu: "500m"
+            cpu: "250m"
             memory: "512Mi"
           requests:
-            cpu: "250m"
+            cpu: "100m"
             memory: "256Mi"
       volumes:
       - name: amqp-tls

@@ -64,13 +64,17 @@ spec:
           value: /etc/amqp-tls/tls.crt
         - name: AMQP_KEY_FILE
           value: /etc/amqp-tls/tls.key
+        # v6 : débit de crise. Le générateur publie RATE messages/s (1 en temps normal). Le test de
+        # passage à l'échelle (v6-load-test.sh) le porte à 100 (× 100) avec « kubectl set env ».
+        - name: RATE
+          value: "1"
         volumeMounts:
         - name: amqp-tls
           mountPath: /etc/amqp-tls
           readOnly: true
         resources: # 👈 Obligatoire pour passer le ResourceQuota du namespace
           limits:
-            cpu: "200m"
+            cpu: "400m" # v6 : 200m -> 400m, pour publier 100 messages/s en TLS avec confirmation
             memory: "256Mi"
           requests:
             cpu: "100m"

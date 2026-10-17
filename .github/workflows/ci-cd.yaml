@@ -1,16 +1,17 @@
 name: Telecom IA Cloud-Native CI/CD
 
-# À chaque push (et pull request) sur main, v3, v4 ou v5 :
+# À chaque push (et pull request) sur main, v3, v4, v5 ou v6 :
 #   CI : Linting          -> syntaxe Python, test du TLS mutuel, fichiers de configuration, manifestes Kubernetes,
-#                            règles de sécurité de la v5 (RBAC, réseau, secrets), scripts shell
-#   CI : Test E2E         -> docker-compose.test.yml : générateur -> RabbitMQ -> IA -> Prometheus -> Grafana,
-#                            puis panne du broker et vérification de la reprise
+#                            règles de sécurité (v5), cohérence du modèle et règles du passage à l'échelle (v6),
+#                            scripts shell
+#   CI : Test E2E         -> docker-compose.test.yml : registre MLflow + entraînement centralisé (v6), puis
+#                            générateur -> RabbitMQ -> IA -> Prometheus -> Grafana, panne du broker et reprise
 #   CD : Image du cluster -> construction, contrôle et publication de l'image (push uniquement)
 on:
   push:
-    branches: [ "main", "v3", "v4", "v5" ]
+    branches: [ "main", "v3", "v4", "v5", "v6" ]
   pull_request:
-    branches: [ "main", "v3", "v4", "v5" ]
+    branches: [ "main", "v3", "v4", "v5", "v6" ]
 
 permissions:
   contents: read
@@ -35,7 +36,7 @@ jobs:
     - name: Install linters
       run: |
         python -m pip install --upgrade pip
-        pip install flake8 pyyaml pika
+        pip install flake8 pyyaml pika numpy==1.26.4 scikit-learn==1.4.2
 
     # Erreurs de syntaxe Python et noms indéfinis
     - name: Lint Python code (flake8)
@@ -96,9 +97,17 @@ jobs:
     - name: Check security rules (RBAC, network, secrets)
       run: python check_security.py
 
-    # Les scripts d'exploitation de la v5 (shellcheck est préinstallé sur ubuntu-latest)
+    # v6 : le piège de la v5 (un modèle par pod) mesuré, et la correction vérifiée (sans registre)
+    - name: Test model consistency (centralized training)
+      run: python test_model_consistency.py
+
+    # v6 : pas d'entraînement dans app.py, autoscaler cohérent avec le quota, registre bien configuré
+    - name: Check scaling rules (autoscaler, quota, model registry)
+      run: python check_scaling.py
+
+    # Les scripts d'exploitation de la v5 et de la v6 (shellcheck est préinstallé sur ubuntu-latest)
     - name: Lint shell scripts
-      run: shellcheck -S warning -e SC2034 v5-*.sh
+      run: shellcheck -S warning -e SC2034 v5-*.sh v6-*.sh
 
     - name: Validate docker-compose.test.yml
       run: docker compose -f docker-compose.test.yml config -q
@@ -108,7 +117,7 @@ jobs:
         curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
         sudo mv kubeconform /usr/local/bin/
 
-    # Validation réelle des manifestes : schémas officiels + CRD (PodMonitor, PrometheusRule), mode strict.
+    # Validation réelle des manifestes : schémas officiels + CRD (PodMonitor, PrometheusRule, ScaledObject), mode strict.
     # -strict refuse les champs inconnus (ex. "environment:" au lieu de "env:").
     - name: Validate Kubernetes manifests (schemas, strict)
       run: |
@@ -122,6 +131,9 @@ jobs:
           05-rbac.yaml \
           06-alert-rules.yaml \
           07-tenant-simulation.yaml \
+          08-mlops.yaml \
+          09-train-job.yaml \
+          10-autoscaling.yaml \
           rabbitmq-v3-persistant.yaml \
           deployment.yaml \
           generator-deployment.yaml \
@@ -149,6 +161,14 @@ jobs:
     # (il pilote le conteneur RabbitMQ avec la CLI docker, d'où l'absence de service "testeur")
     - name: Install test dependencies
       run: pip install requests
+
+    # v6 : le registre d'abord, puis l'entraînement centralisé (une fois), puis le reste de la chaîne.
+    # L'IA ne démarre (healthcheck) qu'après avoir téléchargé le modèle promu.
+    - name: Start the model registry and the broker
+      run: docker compose -f docker-compose.test.yml up -d --build --wait --wait-timeout 240 mlflow rabbitmq
+
+    - name: Train, validate and promote the model (once)
+      run: docker compose -f docker-compose.test.yml run --rm --build trainer
 
     - name: Start the stack (generator, RabbitMQ, IA, Prometheus, Grafana)
       run: docker compose -f docker-compose.test.yml up -d --build --wait --wait-timeout 240
@@ -219,7 +239,7 @@ jobs:
         cache-to: type=gha,mode=max
 
     - name: Smoke test the image
-      run: docker run --rm telecom-ia:ci python -c "import numpy, sklearn, pika, prometheus_client; print('imports OK')"
+      run: docker run --rm telecom-ia:ci python -c "import numpy, sklearn, pika, prometheus_client, mlflow.sklearn, model_registry, model_lib; print('imports OK')"
 
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3

@@ -149,6 +149,14 @@ def prometheus_target_up():
     return bool(result) and result[0]["value"][1] == "1"
 
 
+def prometheus_model_from_registry():
+    """v6 : l'IA expose la version du modèle téléchargé depuis le registre (telecom_model_info)."""
+    r = requests.get(f"{URL_PROMETHEUS}/api/v1/query", params={"query": "telecom_model_info"}, timeout=5)
+    r.raise_for_status()
+    result = r.json()["data"]["result"]
+    return bool(result) and result[0]["metric"].get("model_version")
+
+
 def grafana_health_ok():
     r = requests.get(f"{URL_GRAFANA}/api/health", timeout=5)
     r.raise_for_status()
@@ -190,6 +198,7 @@ def check_stack_to_grafana():
     print("🔎 Contrôle de la chaîne jusqu'à Grafana...")
     steps = [
         ("Prometheus collecte l'IA (up{job=\"telecom-ia\"} = 1)", prometheus_target_up),
+        ("L'IA sert le modèle validé du registre (telecom_model_info, v6)", prometheus_model_from_registry),
         ("Grafana répond (/api/health, base de données ok)", grafana_health_ok),
         ("Source de données Prometheus provisionnée dans Grafana", grafana_datasource_ok),
         (f"Tableau de bord '{GRAFANA_DASHBOARD_UID}' provisionné dans Grafana", grafana_dashboard_ok),

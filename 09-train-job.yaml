@@ -1,0 +1,72 @@
+# Entraînement CENTRALISÉ du modèle (v6) : un Job lancé une fois, pas à chaque démarrage de pod.
+#
+# Il entraîne l'Isolation Forest sur des données reproductibles (graine fixe), le valide (porte de
+# qualité), l'enregistre dans le registre MLflow et, seulement s'il est valide, lui donne l'alias
+# « production ». Voir train.py.
+#
+# Lancement (« create » et non « apply » : chaque lancement crée un nouveau Job, grâce à generateName) :
+#   kubectl create -f 09-train-job.yaml
+#   kubectl wait -n mlops --for=condition=complete job -l app=model-trainer --timeout=300s
+#   kubectl logs -n mlops -l app=model-trainer --tail=20
+#
+# Après une nouvelle promotion, les pods de l'IA déjà lancés gardent leur version : pour qu'ils prennent
+# la nouvelle, « kubectl rollout restart deployment/telecom-ia-deployment -n ia » (remplacement
+# progressif, un pod à la fois).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: train-telecom-model-
+  namespace: mlops
+  labels:
+    app: model-trainer
+spec:
+  backoffLimit: 0                 # un modèle refusé par la porte de qualité n'est pas réessayé
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 86400  # le Job terminé (et ses journaux) reste visible 24 h
+  template:
+    metadata:
+      labels:
+        app: model-trainer
+    spec:
+      restartPolicy: Never
+      serviceAccountName: model-trainer
+      automountServiceAccountToken: false
+      nodeSelector:
+        workload: compute
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: trainer
+        image: telecom-ia:latest # même image que l'IA : même version de scikit-learn pour écrire et lire le modèle
+        imagePullPolicy: Never
+        command: ["python", "train.py"]
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: HOME
+          value: /tmp
+        - name: MLFLOW_TRACKING_URI
+          value: http://mlflow.mlops.svc.cluster.local:5000
+        - name: MODEL_NAME
+          value: telecom-anomaly
+        - name: MODEL_ALIAS
+          value: production
+        - name: TRAINING_SEED
+          value: "42"
+        - name: TRAINING_CONTAMINATION # 0.3 = modèle volontairement mauvais, refusé (démonstration)
+          value: "0.05"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"

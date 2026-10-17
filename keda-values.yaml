@@ -1,0 +1,26 @@
+# Valeurs Helm de KEDA (v6) : l'autoscaler qui pilote l'HPA de l'IA à partir de métriques Prometheus.
+# Mêmes piliers que la pile d'observabilité de la v4 :
+#   A : requests / limits sur chaque composant (les valeurs par défaut du chart vont jusqu'à 1 CPU et
+#       1000Mi par pod, trop pour un cluster Kind) ;
+#   C : nodeSelector vers le worker « ingestion », jamais sur le worker « compute » de l'IA.
+# Valeurs de départ, à ajuster par la mesure (kubectl top n'existe pas sur Kind sans metrics-server :
+# lire la mémoire avec « docker stats » sur les nœuds ou dans Prometheus).
+#
+# Installation (namespace dédié « keda ») :
+#   helm repo add kedacore https://kedacore.github.io/charts
+#   helm repo update
+#   helm upgrade --install keda kedacore/keda --version 2.21.0 -n keda --create-namespace -f keda-values.yaml
+
+nodeSelector:
+  workload: ingestion
+
+resources:
+  operator:          # lit Prometheus, décide du nombre de pods, crée et met à jour l'HPA
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 300m, memory: 256Mi }
+  metricServer:      # sert les métriques externes à l'HPA (API external.metrics.k8s.io)
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 300m, memory: 256Mi }
+  webhooks:          # valide les ScaledObject à leur création
+    requests: { cpu: 25m, memory: 32Mi }
+    limits:   { cpu: 100m, memory: 128Mi }

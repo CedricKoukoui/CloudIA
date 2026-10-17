@@ -1,0 +1,87 @@
+# Passage à l'échelle horizontal de l'IA (v6).
+#
+# Prérequis : KEDA installé (keda-values.yaml), la pile Prometheus de la v4, et les règles réseau de
+# 02 et 04 (Prometheus -> RabbitMQ:15692, KEDA -> Prometheus:9090).
+#
+# Chaîne de décision :
+#   RabbitMQ (:15692) --collecte 5 s--> Prometheus --requête 10 s--> KEDA --> HPA « keda-hpa-telecom-ia-scaler »
+#   --> Deployment telecom-ia-deployment (1 à 5 pods, plafonné aussi par le quota du namespace « ia »)
+#
+# Deux métriques personnalisées ; l'HPA retient la plus exigeante :
+#   1. backlog    : messages en attente dans la file / 100  -> rattraper le retard ;
+#   2. throughput : messages traités par seconde / 50       -> tenir le débit sans recréer de retard.
+# La seule longueur de file ne suffit pas : une fois le retard rattrapé, la file est vide, l'HPA
+# retirerait des pods alors que le débit de crise continue, et le retard reviendrait (oscillation).
+# Le seuil de 50 messages/s par pod est un point de départ : v6-load-test.sh mesure la capacité réelle
+# d'un pod (limite 250m CPU), à reporter ici avec une marge.
+---
+# Métriques de la file, par file : point /metrics/detailed du plugin rabbitmq_prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: rabbitmq-queue-metrics
+  namespace: ingestion
+  labels:
+    release: telecom-monitor # label que Prometheus utilise pour découvrir les PodMonitor
+spec:
+  selector:
+    matchLabels:
+      app: rabbitmq
+  podMetricsEndpoints:
+  - port: prometheus
+    path: /metrics/detailed
+    params:
+      family: ["queue_coarse_metrics"]  # rabbitmq_detailed_queue_messages_ready, _unacked, ...
+      vhost: ["/"]
+    interval: 5s
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: telecom-ia-scaler
+  namespace: ia
+spec:
+  scaleTargetRef:
+    name: telecom-ia-deployment
+  # Jamais 0 : la supervision doit toujours tourner. Si quelqu'un met quand même l'IA à 0 réplique
+  # (scénario Q14), KEDA la remet au minimum au cycle suivant.
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  pollingInterval: 10           # KEDA interroge Prometheus toutes les 10 s
+  # Prometheus injoignable ou requête en erreur 3 fois de suite : 2 pods, par prudence
+  fallback:
+    failureThreshold: 3
+    replicas: 2
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        # Montée immédiate : jusqu'à +4 pods toutes les 15 s (de 1 à 5 en un seul pas)
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+          - type: Pods
+            value: 4
+            periodSeconds: 15
+        # Descente prudente : on attend 2 min de calme, puis -1 pod toutes les 30 s (pas d'oscillation)
+        scaleDown:
+          stabilizationWindowSeconds: 120
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 30
+  triggers:
+  # 1. Retard : 1 pod par tranche de 100 messages en attente
+  - type: prometheus
+    name: backlog
+    metadata:
+      serverAddress: http://prometheus-operated.default.svc:9090
+      query: sum(rabbitmq_detailed_queue_messages_ready{namespace="ingestion",queue="telecom_traffic"})
+      threshold: "100"
+  # 2. Débit : 1 pod par tranche de 50 messages/s traités. « or vector(0) » : pas d'erreur (donc pas
+  #    de repli) quand aucun pod n'a encore publié de métrique.
+  - type: prometheus
+    name: throughput
+    metadata:
+      serverAddress: http://prometheus-operated.default.svc:9090
+      query: sum(rate(telecom_processed_packets_total{namespace="ia"}[1m])) or vector(0)
+      threshold: "50"

@@ -1,7 +1,10 @@
 name: Kind E2E (manuel)
 
-# Test de bout en bout sur un vrai cluster Kind à 3 nœuds (v5) : labels, nodeSelector, ResourceQuotas,
-# NetworkPolicy (entrée ET sortie), RBAC, TLS mutuel, secrets, panne du broker. Plus lourd que la sonde
+# Test de bout en bout sur un vrai cluster Kind à 3 nœuds (v5, v6) : labels, nodeSelector, ResourceQuotas,
+# NetworkPolicy (entrée ET sortie), RBAC, TLS mutuel, secrets, panne du broker ; v6 : registre MLflow,
+# entraînement centralisé, 3 pods de l'IA qui servent le même modèle et se partagent la file.
+# KEDA et Prometheus ne sont pas installés ici (trop lourds pour ce job) : l'autoscaling lui-même est
+# vérifié sur le cluster local (v6-checks.sh, v6-load-test.sh). Plus lourd que la sonde
 # Compose (≈ 10 min) : il ne tourne pas à chaque push, mais à la demande
 # (GitHub > Actions > "Kind E2E (manuel)" > Run workflow).
 #
@@ -84,6 +87,15 @@ jobs:
         kubectl apply -f rabbitmq-v3-persistant.yaml
         kubectl rollout status statefulset/telecom-broker-rabbitmq -n ingestion --timeout=240s
 
+    # v6 : registre de modèles, puis entraînement centralisé (avant l'IA, qui attend le modèle promu)
+    - name: Deploy model registry and train the model once
+      run: |
+        kubectl apply -f 08-mlops.yaml
+        kubectl rollout status deploy/mlflow -n mlops --timeout=300s
+        kubectl create -f 09-train-job.yaml
+        kubectl wait -n mlops --for=condition=complete job -l app=model-trainer --timeout=300s
+        kubectl logs -n mlops -l app=model-trainer --tail=20
+
     - name: Deploy IA, generator, observability link and network policies
       run: |
         kubectl apply -f deployment.yaml -f generator-deployment.yaml -f prometheus-link.yaml
@@ -104,12 +116,29 @@ jobs:
         check ia app=telecom-ia compute
         check ingestion app=rabbitmq ingestion
         check ingestion app=telecom-generator ingestion
+        check mlops app=mlflow compute
 
     # v5 : secrets, TLS mutuel, isolation réseau (entrée et sortie), RBAC, attaque simulée (Q3, Q9, Q14)
     - name: Security checks (v5-checks.sh)
       run: |
         kubectl apply -f 07-tenant-simulation.yaml
         CI_MODE=1 ./v5-checks.sh
+
+    # v6 : 3 pods de l'IA (à la main, sans KEDA) -> un seul modèle, et chaque pod consomme une part de la file
+    - name: Scale out to 3 pods (same model, competing consumers)
+      run: |
+        kubectl scale deployment/telecom-ia-deployment -n ia --replicas=3
+        kubectl rollout status deploy/telecom-ia-deployment -n ia --timeout=240s
+        sleep 45
+        for p in $(kubectl get pods -n ia -l app=telecom-ia -o name); do
+          model=$(kubectl logs -n ia "$p" | grep -m1 'Modèle version')
+          seen=$(kubectl logs -n ia "$p" | grep -cE 'Normal|ANOMALIE' || true)
+          echo "$p : $model | messages journalisés : $seen"
+          [ "$seen" -gt 0 ] || { echo "$p n'a reçu aucun message"; exit 1; }
+        done
+        CI_MODE=1 ./v6-checks.sh
+        kubectl scale deployment/telecom-ia-deployment -n ia --replicas=1
+        kubectl rollout status deploy/telecom-ia-deployment -n ia --timeout=240s
 
     # Supprime le broker et vérifie que le flux reprend ET que l'IA n'a pas redémarré
     - name: Crash-test de résilience (suppression du broker)
@@ -125,3 +154,5 @@ jobs:
         kubectl logs -n ia deploy/telecom-ia-deployment --tail=50 || true
         kubectl logs -n ingestion deploy/telecom-generator-deployment --tail=50 || true
         kubectl logs -n ingestion statefulset/telecom-broker-rabbitmq --tail=50 || true
+        kubectl logs -n mlops deploy/mlflow --tail=50 || true
+        kubectl get jobs -n mlops || true

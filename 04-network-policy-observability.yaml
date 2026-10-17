@@ -76,3 +76,28 @@ spec:
   - ports:
     - protocol: TCP
       port: 10250
+---
+# v6 : KEDA (namespace « keda ») interroge Prometheus pour décider du nombre de pods de l'IA
+# (10-autoscaling.yaml). Seul le pod de l'opérateur KEDA, et seulement le port 9090.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-keda-to-prometheus
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: keda
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: keda-operator
+    ports:
+    - protocol: TCP
+      port: 9090

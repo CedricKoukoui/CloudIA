@@ -1,0 +1,120 @@
+# Registre de modèles MLflow (v6) : le modèle est entraîné UNE fois (09-train-job.yaml), validé, stocké
+# ici, puis téléchargé par chaque pod de l'IA. Plus aucun pod ne s'entraîne dans son coin.
+#
+# Prérequis : 01-namespaces-quotas.yaml (namespace « mlops » et son quota) et 05-rbac.yaml (compte de
+# service « mlflow »). Les règles réseau du namespace sont dans 02-network-policy.yaml.
+#
+# Choix de déploiement (adaptés à un cluster Kind de démonstration) :
+#   - une seule réplique, base SQLite et artefacts sur un volume persistant : le registre survit au
+#     redémarrage du pod, mais ce n'est pas une installation haute disponibilité (README, limites) ;
+#   - « --workers 1 » et exécution des tâches de fond désactivée : sans cela, MLflow 3 lance une
+#     dizaine de processus (≈ 200 Mo chacun) ;
+#   - « --allowed-hosts » : MLflow refuse (HTTP 403) toute requête dont l'en-tête Host n'est pas dans
+#     la liste. Il faut donc y mettre le nom DNS du Service, sinon l'IA ne peut pas lire le registre.
+#   - aucune authentification : seul le réseau protège le registre (02-network-policy.yaml : seuls le
+#     Job d'entraînement et les pods de l'IA peuvent le joindre).
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-data
+  namespace: mlops
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: mlops
+  labels:
+    app: mlflow
+spec:
+  replicas: 1
+  # Un seul processus doit écrire dans la base SQLite et le volume (ReadWriteOnce) : l'ancien pod
+  # s'arrête avant que le nouveau démarre.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      serviceAccountName: mlflow
+      automountServiceAccountToken: false
+      nodeSelector:
+        workload: compute # Pilier C : la partie IA (registre, entraînement, inférence) sur le worker "compute"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001 # rend le volume /mlflow inscriptible par l'uid 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: mlflow
+        image: ghcr.io/mlflow/mlflow:v3.17.1 # même version que le client (requirements.txt)
+        command: ["mlflow", "server"]
+        args:
+        - --host=0.0.0.0
+        - --port=5000
+        - --workers=1
+        - --backend-store-uri=sqlite:////mlflow/mlflow.db
+        - --artifacts-destination=/mlflow/artifacts
+        - --allowed-hosts=mlflow,mlflow:*,mlflow.mlops,mlflow.mlops:*,mlflow.mlops.svc,mlflow.mlops.svc:*,mlflow.mlops.svc.cluster.local,mlflow.mlops.svc.cluster.local:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*
+        env:
+        - name: HOME
+          value: /tmp
+        - name: MLFLOW_SERVER_ENABLE_JOB_EXECUTION
+          value: "false"
+        - name: MLFLOW_DISABLE_AGENT_HINT
+          value: "1"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        ports:
+        - containerPort: 5000
+          name: http
+        # Sonde « exec » (dans le conteneur) : indépendante des NetworkPolicy du namespace
+        readinessProbe:
+          exec:
+            command: ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        volumeMounts:
+        - name: data
+          mountPath: /mlflow
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "512Mi"
+          limits:
+            cpu: "500m"
+            memory: "768Mi"
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: mlflow-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: mlops
+  labels:
+    app: mlflow
+spec:
+  selector:
+    app: mlflow
+  ports:
+  - port: 5000
+    targetPort: 5000
+    name: http

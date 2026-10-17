@@ -1,4 +1,6 @@
-# Règles d'alerte (v5) : donnent leur rôle à Alertmanager, kube-state-metrics et node-exporter.
+# Règles d'alerte (v5, complétées en v6) : donnent leur rôle à Alertmanager, kube-state-metrics et node-exporter.
+# v6 : groupe « cloudia.scaling » (passage à l'échelle et cohérence du modèle). Le nom de l'objet
+# reste « cloudia-v5-alerts » pour que « kubectl apply » mette à jour la ressource existante.
 # Le label « release: telecom-monitor » est celui que Prometheus utilise pour découvrir les règles
 # (nom de la release Helm).
 #
@@ -17,6 +19,8 @@ spec:
     rules:
     # Q14 : un acteur malveillant (ou une erreur) met le déploiement de l'IA à 0 réplique.
     # Le RBAC limite QUI peut le faire ; cette alerte détecte que quelqu'un l'a quand même fait.
+    # v6 : KEDA remet le minimum (1 pod) en 10 s environ ; une mise à 0 aussi brève peut ne pas être
+    # vue (collecte de kube-state-metrics toutes les 30 s). L'alerte reste utile si l'autoscaler est absent.
     - alert: IaScaledToZero
       expr: kube_deployment_spec_replicas{namespace="ia",deployment="telecom-ia-deployment"} == 0
       for: 30s
@@ -69,3 +73,53 @@ spec:
       annotations:
         summary: "Moins de 10 % d'espace libre sur un nœud"
         description: "Le disque de {{ $labels.instance }} est presque plein."
+  # ---------------------------------------------------------------- v6 : passage à l'échelle
+  - name: cloudia.scaling
+    rules:
+    # L'autoscaler ne voit plus la longueur de la file : il décide à l'aveugle (repli sur 2 pods)
+    - alert: AutoscalingQueueMetricMissing
+      expr: absent(rabbitmq_detailed_queue_messages_ready{namespace="ingestion",queue="telecom_traffic"})
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Longueur de la file RabbitMQ inconnue"
+        description: "Prometheus ne collecte plus rabbitmq_detailed_queue_messages_ready (PodMonitor, port 15692 ou règle réseau) : l'autoscaler de l'IA ne voit plus le retard."
+    # Le retard ne se résorbe pas malgré l'autoscaler
+    - alert: IaBacklogHigh
+      expr: sum(rabbitmq_detailed_queue_messages_ready{namespace="ingestion",queue="telecom_traffic"}) > 1000
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Plus de 1000 messages en attente depuis 2 minutes"
+        description: "L'IA ne suit pas le débit : vérifier le nombre de pods (HPA), le quota du namespace ia et la capacité du worker compute."
+    # L'autoscaler est au plafond : la prochaine hausse de trafic ne pourra plus être absorbée
+    - alert: IaAtMaxReplicas
+      expr: |
+        kube_horizontalpodautoscaler_status_current_replicas{namespace="ia"}
+          >= on(namespace, horizontalpodautoscaler) kube_horizontalpodautoscaler_spec_max_replicas{namespace="ia"}
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "L'IA tourne au nombre maximal de pods depuis 5 minutes"
+        description: "{{ $labels.horizontalpodautoscaler }} est au maximum : relever maxReplicaCount ET le quota du namespace ia, ou ajouter un nœud."
+    # Des pods ne deviennent pas Ready (registre de modèles injoignable, aucune version promue, quota...)
+    - alert: IaReplicasNotReady
+      expr: kube_deployment_status_replicas_unavailable{namespace="ia",deployment="telecom-ia-deployment"} > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Des pods de l'IA ne sont pas prêts depuis 5 minutes"
+        description: "Un pod sans modèle ne consomme rien : vérifier le registre MLflow (namespace mlops) et l'alias production."
+    # Cohérence du modèle : tous les pods doivent servir la même version (sauf pendant un remplacement)
+    - alert: IaModelVersionMismatch
+      expr: count(count by (model_version) (telecom_model_info{namespace="ia"})) > 1
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Les pods de l'IA n'utilisent pas tous la même version du modèle"
+        description: "Normal quelques minutes après une promotion ; au-delà, terminer le remplacement : kubectl rollout restart deployment/telecom-ia-deployment -n ia."

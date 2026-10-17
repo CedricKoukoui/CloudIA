@@ -1,4 +1,4 @@
-# Isolation réseau (v5) : Zero Trust pour les namespaces « ingestion » et « ia » (Q3 et Q9).
+# Isolation réseau (v5, complétée en v6) : Zero Trust pour les namespaces « ingestion », « ia » et « mlops » (Q3, Q9).
 #
 # Par rapport à la v3 :
 #   - le trafic SORTANT (Egress) est aussi refusé par défaut : un pod compromis ne peut plus
@@ -6,10 +6,14 @@
 #   - les sources autorisées sont des PODS précis (labels), plus des namespaces entiers ;
 #   - le broker n'accepte que l'AMQP chiffré (port 5671), plus le port 5672 en clair.
 #
-# Résultat, par pod :
+# Résultat, par pod (v6 : lignes marquées *) :
 #   générateur : sort uniquement vers RabbitMQ:5671 (et vers le DNS)
-#   IA         : sort uniquement vers RabbitMQ:5671 (et vers le DNS) ; n'accepte que Prometheus sur :8000
-#   RabbitMQ   : n'accepte que le générateur et l'IA sur :5671 ; ne sort que vers le DNS
+#   IA         : sort uniquement vers RabbitMQ:5671 et *vers le registre MLflow:5000 (et vers le DNS) ;
+#                n'accepte que Prometheus sur :8000
+#   RabbitMQ   : n'accepte que le générateur et l'IA sur :5671, *et Prometheus sur :15692 (longueur de
+#                la file, pour l'autoscaler) ; ne sort que vers le DNS
+#  *MLflow     : n'accepte que le Job d'entraînement et les pods de l'IA sur :5000 ; ne sort que vers le DNS
+#  *Entraînement : sort uniquement vers MLflow:5000 (et vers le DNS)
 #
 # Ces règles ne sont appliquées que si le CNI les applique : voir v5-test-egress.sh.
 ---
@@ -182,3 +186,139 @@ spec:
     ports:
     - protocol: TCP
       port: 8000
+---
+# ---------------------------------------------------------------- v6 : passage à l'échelle
+# 9. RabbitMQ : métriques de la file (15692) uniquement depuis le pod Prometheus. Elles alimentent
+#    l'autoscaler de l'IA (10-autoscaling.yaml). Même forme que la règle 8 : namespace ET pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-rabbitmq-metrics-scrape
+  namespace: ingestion
+spec:
+  podSelector:
+    matchLabels:
+      app: rabbitmq
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: default
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+    ports:
+    - protocol: TCP
+      port: 15692
+---
+# 10. IA : seconde sortie autorisée, le registre de modèles (téléchargement du modèle au démarrage)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ia-egress-to-model-registry
+  namespace: ia
+spec:
+  podSelector:
+    matchLabels:
+      app: telecom-ia
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: mlops
+      podSelector:
+        matchLabels:
+          app: mlflow
+    ports:
+    - protocol: TCP
+      port: 5000
+---
+# 11. mlops : refus par défaut, entrée ET sortie (même principe que ia et ingestion)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: mlops
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+---
+# 12. mlops : résolution DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: mlops
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+---
+# 13. MLflow : le registre n'a pas d'authentification, le réseau est sa seule protection. Seuls
+#     le Job d'entraînement (écrit les versions) et les pods de l'IA (lisent le modèle) le joignent.
+#     Le générateur, l'exposé des scénarios Q3 / Q9, ne peut donc pas déposer un faux modèle.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-model-registry-clients
+  namespace: mlops
+spec:
+  podSelector:
+    matchLabels:
+      app: mlflow
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: model-trainer
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ia
+      podSelector:
+        matchLabels:
+          app: telecom-ia
+    ports:
+    - protocol: TCP
+      port: 5000
+---
+# 14. Entraînement : la seule sortie autorisée est le registre MLflow:5000
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: trainer-egress-to-model-registry
+  namespace: mlops
+spec:
+  podSelector:
+    matchLabels:
+      app: model-trainer
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: mlflow
+    ports:
+    - protocol: TCP
+      port: 5000
