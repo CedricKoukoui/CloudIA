@@ -3,6 +3,8 @@
 [![CI](https://github.com/CedricKoukoui/CloudIA/actions/workflows/ci-cd.yaml/badge.svg?branch=v6)](https://github.com/CedricKoukoui/CloudIA/actions/workflows/ci-cd.yaml)
 
 > 📊 **Schéma d'architecture** : `schema-architecture-v5.png` (à la racine du dépôt) décrit la base de sécurité dont part la v6. Le schéma de la v6 reste à produire (section 16).
+>
+> ![Architecture v6](schema-architecture-v6.png)
 
 Ce document ne décrit que la **version v6**. Elle part de la v5 (sécurité du cluster : RBAC, isolation réseau, TLS mutuel, secrets), elle-même construite sur la v4 (rétention des métriques) et la v3 (isolation des ressources). Pour les versions précédentes, voir les README des branches `v3`, `v4` et `v5`.
 
